@@ -330,12 +330,28 @@ def trail_positions(
                     nonlocal _abs_qty
                     import math as _math
 
-                    # qty to close = 20% of ORIGINAL position
+                    # qty to close = 20% of ORIGINAL position (the entry qty, not the
+                    # current remaining qty, which can differ if external sells happened).
+                    # T1 records original_qty so T2 can close the same absolute amount.
                     if tier_name == "t1":
                         raw_qty = _abs_qty * fraction_to_close
+                        # Store the original position size so T2 can reference it —
+                        # in-memory only (no schema change needed; protects the same-
+                        # cycle case where both tiers fire in one AEGIS run).
+                        _hist["original_qty"] = _abs_qty
                     else:
-                        raw_qty = _hist.get("t1_qty", 0) or (_abs_qty * fraction_to_close)
-                        raw_qty = min(raw_qty, _abs_qty)
+                        # T2 qty: prefer same-absolute-qty as T1 (closes equal tranches).
+                        # Priority: stored t1_qty (most accurate) > inferred from
+                        # original_qty > fallback to current remaining * fraction.
+                        t1_qty_stored = _hist.get("t1_qty", 0.0)
+                        orig_qty = _hist.get("original_qty", 0.0)
+                        if t1_qty_stored > 0:
+                            raw_qty = t1_qty_stored          # exact same shares as T1
+                        elif orig_qty > 0:
+                            raw_qty = orig_qty * fraction_to_close   # infer from stored original
+                        else:
+                            raw_qty = _abs_qty * fraction_to_close   # fallback: use current qty
+                        raw_qty = min(raw_qty, _abs_qty)     # never try to sell more than held
 
                     # ALWAYS floor to whole shares — cleaner orders, no Alpaca
                     # complaints on non-fractionable assets, no weird .05 / .79
@@ -512,23 +528,37 @@ def trail_positions(
                         except Exception as _tpe:
                             print(f"[AEGIS] {ticker} could not reissue TP at remain_qty: {_tpe}")
 
-                    # Log to Supabase — status encodes which tier fired
+                    # Log to Supabase — status encodes which tier fired.
+                    # CRITICAL: if this write fails and is not retried, the next
+                    # AEGIS run reads the DB, sees no t1/t2 record, and re-fires
+                    # the same tier (double partial exit). Retry once with a short
+                    # sleep before accepting failure.
+                    _trade_record = {
+                        "order_id":     str(close_order.id),
+                        "ticker":       ticker,
+                        "side":         "sell_partial" if is_long else "buy_partial",
+                        "dollar_amount": round(close_qty * _current_px, 2),
+                        "mode":         "LIVE" if is_live_mode() else "PAPER",
+                        "status":       f"partial_exit_{tier_name}",
+                        "reason":       (f"Tier-{tier_name.upper()[1]} scale-out "
+                                         f"{fraction_to_close*100:.0f}% at +{pct_gain:.1f}% "
+                                         f"gain qty={close_qty}"),
+                        "timestamp":    datetime.now().isoformat(),
+                    }
                     try:
                         from db import save_trade
-                        save_trade({
-                            "order_id":     str(close_order.id),
-                            "ticker":       ticker,
-                            "side":         "sell_partial" if is_long else "buy_partial",
-                            "dollar_amount": round(close_qty * _current_px, 2),
-                            "mode":         "LIVE" if is_live_mode() else "PAPER",
-                            "status":       f"partial_exit_{tier_name}",
-                            "reason":       (f"Tier-{tier_name.upper()[1]} scale-out "
-                                             f"{fraction_to_close*100:.0f}% at +{pct_gain:.1f}% "
-                                             f"gain qty={close_qty}"),
-                            "timestamp":    datetime.now().isoformat(),
-                        })
+                        save_trade(_trade_record)
                     except Exception as dbe:
-                        print(f"[AEGIS] Could not log {tier_name} to DB: {dbe}")
+                        print(f"[AEGIS] Could not log {tier_name} to DB: {dbe} — retrying in 2s")
+                        import time as _save_time
+                        _save_time.sleep(2.0)
+                        try:
+                            save_trade(_trade_record)
+                            print(f"[AEGIS] {ticker} {tier_name} DB write succeeded on retry")
+                        except Exception as dbe2:
+                            print(f"[AEGIS] {ticker} {tier_name} DB retry also failed: {dbe2} "
+                                  f"— WARNING: next AEGIS run may re-fire {tier_name} "
+                                  f"(in-memory guard active for this run only)")
 
                     pnl_locked = round(close_qty * (_current_px - _entry_px)
                                        * (1 if is_long else -1), 2)
@@ -565,6 +595,28 @@ def trail_positions(
                     }
 
                 fired_any = False
+
+                # ── Re-fetch this ticker's orders right before _fire_tier ──────
+                # The global ticker_orders snapshot (built at loop start) can miss
+                # orders placed externally between snapshot and now. _fire_tier
+                # cancels stops and TP legs from ticker_orders — a stale snapshot
+                # means those externally-placed orders survive the partial exit at
+                # their ORIGINAL qty, leading to an over-sell when they fill later.
+                # Refreshing here is cheap (one API call) and keeps the cancel list
+                # accurate. ticker_orders is a closure variable — updating it here
+                # is visible to _fire_tier when it's called below.
+                if (_hist.get("t1", False) is False or _hist.get("t2", False) is False):
+                    try:
+                        _fresh_all = client.get_orders(
+                            GetOrdersRequest(status=_QOS.ALL, limit=200))
+                        ticker_orders = [o for o in _fresh_all
+                                         if is_active_order(o) and o.symbol == ticker]
+                        print(f"[AEGIS] {ticker} refreshed orders for _fire_tier "
+                              f"({len(ticker_orders)} active)")
+                    except Exception as _ro_err:
+                        print(f"[AEGIS] {ticker} could not refresh orders: {_ro_err} "
+                              f"— using snapshot ({len(ticker_orders)} orders)")
+
                 # Tier 1
                 if not _hist.get("t1", False) and pct_gain_decimal >= PARTIAL_EXIT_TIER1_TRIGGER:
                     try:
