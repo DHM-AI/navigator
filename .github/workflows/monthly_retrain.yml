@@ -16,7 +16,10 @@ on:
 jobs:
   retrain:
     runs-on: ubuntu-latest
-    timeout-minutes: 60        # Training can take up to 45 minutes on 3 years of data
+    timeout-minutes: 120       # CI runners are ~2-3x slower than local M-series;
+                               # 5yr XGBoost train alone can take 50+ min on a
+                               # GitHub ubuntu runner. 2026-06-01 run FAILED at
+                               # 58:28 against the old 60-min cap. 120 gives slack.
 
     steps:
       - name: Checkout repository
@@ -47,29 +50,46 @@ jobs:
         run: |
           git config user.name  "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
-          git add model/saved/xgb_model.pkl model/saved/feature_names.json model/saved/calibrator.pkl || true
-          # Nothing to commit (model unchanged) → exit cleanly, skip the push
+
+          # Stash the freshly-trained artifacts by hash BEFORE any rebase, so we
+          # can re-apply them on top of the latest remote. The model files are
+          # BINARY — `git pull --rebase` CANNOT auto-merge them and will halt on
+          # conflict (this is why the 2026-06-01 run's retry loop failed). The
+          # newly trained model is always authoritative, so "ours wins" cleanly.
+          ARTIFACTS="model/saved/xgb_model.pkl model/saved/feature_names.json model/saved/calibrator.pkl"
+
+          git add $ARTIFACTS || true
           if git diff --staged --quiet; then
             echo "No model changes to commit — skipping push"
             exit 0
           fi
           git commit -m "chore: monthly model retrain + Platt calibration [skip ci]"
-          # Training takes ~45 min. Other workflows (streamlit_refresh fires at the
-          # same 6 AM ET / 10:00 UTC slot, every-2h cron) push deploy-stamp commits
-          # to main during that window, so a plain `git push` here hits a
-          # non-fast-forward rejection. Rebase-and-retry up to 5 times instead of
-          # failing the whole retrain. A genuine auth/permission failure (not a
-          # race) still surfaces as a red workflow after the retries are exhausted.
+
+          # Push with conflict-safe retry. streamlit_refresh fires at the same
+          # 10:00 UTC slot and pushes deploy-stamp commits during the long train,
+          # so the push can hit a non-fast-forward. On rejection: fetch latest,
+          # hard-reset to origin/main, re-checkout OUR trained artifacts from the
+          # commit we just made, re-commit, retry. Binary-safe (no merge attempt).
+          OUR_COMMIT=$(git rev-parse HEAD)
           for attempt in 1 2 3 4 5; do
             if git push; then
               echo "Push succeeded on attempt $attempt"
               exit 0
             fi
-            echo "Push attempt $attempt failed (likely concurrent push) — rebasing and retrying"
-            git pull --rebase origin main || true
+            echo "Push attempt $attempt rejected — re-basing artifacts onto latest origin/main"
+            git fetch origin main
+            git reset --hard origin/main
+            git checkout "$OUR_COMMIT" -- $ARTIFACTS
+            git add $ARTIFACTS
+            if git diff --staged --quiet; then
+              echo "Artifacts already current on origin — nothing to push"
+              exit 0
+            fi
+            git commit -m "chore: monthly model retrain + Platt calibration [skip ci]"
+            OUR_COMMIT=$(git rev-parse HEAD)
             sleep 5
           done
-          echo "ERROR: model push failed after 5 rebase attempts"
+          echo "ERROR: model push failed after 5 attempts"
           exit 1
 
       - name: Notify Slack on completion
