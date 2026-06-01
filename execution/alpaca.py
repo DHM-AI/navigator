@@ -201,6 +201,24 @@ def place_order(ticker: str, dollar_amount: float, direction: str,
     if not is_configured():
         return {"status": "skipped", "reason": "Alpaca not configured"}
 
+    # ── Market-hours gate ─────────────────────────────────────────────────────
+    # APEX must NEVER place an equity entry while the market is closed. On
+    # 2026-06-01 an AMD bracket SHORT was placed at 4:09 PM ET (9 min after
+    # close); it sat unfilled overnight and would have filled at the next 9:30
+    # open at whatever price AMD gapped to — an uncontrolled entry, the exact
+    # gap risk we've been eliminating. A DAY market order after close is junk.
+    # Refuse here (equities only — crypto trades 24/7 via place_crypto_order).
+    try:
+        _clock = _get_client().get_clock()
+        if not _clock.is_open:
+            print(f"[APEX] {ticker} skipped — market is CLOSED (no entries outside RTH)")
+            return {"status": "skipped", "ticker": ticker,
+                    "reason": "Market closed — no entries outside regular trading hours"}
+    except Exception as _clk_err:
+        # If the clock check itself fails, don't block trading (fail-open) — but
+        # log it so a persistent clock outage is visible.
+        print(f"[APEX] {ticker} market-hours check failed: {_clk_err} — proceeding")
+
     if not _check_daily_loss_limit():
         return {"status": "halted", "reason": "Daily loss limit breached (5%). No new trades today."}
 
