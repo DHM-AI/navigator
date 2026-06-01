@@ -127,6 +127,49 @@ def trail_positions(
             pct_gain_decimal = pct_gain / 100.0
 
             # ══════════════════════════════════════════════════════════════════
+            # CIRCUIT BREAKER: hard per-trade max loss (the safety net under the
+            # normal stop). The 3% stop should never let a position reach -8%, but
+            # on 2026-05-27/28 FLY (-15.9%), VOYG (-15.5%), YMAT (-10.8%) each lost
+            # ~$1,000+ on ONE trade because the stop never fired (status "manual").
+            # If a position is down past HARD_MAX_LOSS_PCT, force-close at market
+            # NOW — don't wait for a stop that clearly isn't working.
+            # Runs FIRST: a blown-through position must exit before anything else.
+            # ══════════════════════════════════════════════════════════════════
+            try:
+                from config import HARD_MAX_LOSS_PCT
+                if pct_gain_decimal <= -HARD_MAX_LOSS_PCT:
+                    print(f"[AEGIS] {ticker} HARD MAX LOSS breached ({pct_gain:.1f}% "
+                          f"≤ -{HARD_MAX_LOSS_PCT*100:.0f}%) — force-closing at market")
+                    try:
+                        close_position(ticker)
+                        results.append({
+                            "ticker": ticker, "pct_gain": round(pct_gain, 2),
+                            "trail_pct": 0, "order_id": "n/a",
+                            "cancelled_sl": 0, "status": "force_closed_max_loss",
+                            "timestamp": datetime.now().isoformat(),
+                        })
+                        from alerts.slack import _post
+                        _post({"text": (
+                            f"🛑 *HARD MAX-LOSS force-close — {ticker}*\n"
+                            f">{('LONG' if is_long else 'SHORT')} {qty:g} @ ${cur_px:.2f} "
+                            f"· P&L *{pct_gain:+.1f}%* (past -{HARD_MAX_LOSS_PCT*100:.0f}% ceiling)\n"
+                            f">The normal stop did not fire — AEGIS closed it as a safety net."
+                        )})
+                    except Exception as _fce:
+                        print(f"[AEGIS] {ticker} force-close FAILED: {_fce}")
+                        try:
+                            from alerts.slack import _post
+                            _post({"text": (
+                                f"🚨 *{ticker} past -{HARD_MAX_LOSS_PCT*100:.0f}% but "
+                                f"force-close FAILED: {str(_fce)[:120]} — CLOSE MANUALLY*"
+                            )})
+                        except Exception:
+                            pass
+                    continue   # position closing — skip all other logic
+            except Exception as _hml:
+                print(f"[AEGIS] {ticker} hard-max-loss check error: {_hml}")
+
+            # ══════════════════════════════════════════════════════════════════
             # RULE: no penny stocks. If a position drifted below MIN_STOCK_PRICE,
             # close it at market — wide spreads + thin liquidity are killers.
             # Runs FIRST so we don't waste an AEGIS cycle placing stops on a

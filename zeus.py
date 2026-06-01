@@ -26,6 +26,7 @@ Checks:
  18.  Mac launchd jobs are healthy (exit code 0, not 126)
  19.  Weekend-gap protection on (no new Friday-PM entries)
  20.  Entry cap per ticker on (blocks accumulating into a loser)
+ 21.  Catastrophic-day circuit breakers (same-day lockout, hard max-loss, daily halt)
 
 Exit code 0 = all good, 1 = at least one FAIL.
 """
@@ -159,7 +160,7 @@ except Exception:
 # ══════════════════════════════════════════════════════════════════════════════
 # CHECK 1 — All open positions have a stop loss order active
 # ══════════════════════════════════════════════════════════════════════════════
-print(f"\n{BOLD}[1/20] Stop Loss Coverage{RESET}")
+print(f"\n{BOLD}[1/21] Stop Loss Coverage{RESET}")
 if not alpaca_ok:
     report.add("Stop Loss Coverage", "WARN",
                "Alpaca not configured — cannot verify stop loss orders")
@@ -278,7 +279,7 @@ else:
 # ══════════════════════════════════════════════════════════════════════════════
 # CHECK 2 — Position count ≤ MAX_OPEN_POSITIONS
 # ══════════════════════════════════════════════════════════════════════════════
-print(f"\n{BOLD}[2/20] Position Count Limit{RESET}")
+print(f"\n{BOLD}[2/21] Position Count Limit{RESET}")
 if not alpaca_ok:
     report.add("Position Count", "WARN", "Alpaca not configured")
 else:
@@ -297,7 +298,7 @@ else:
 # ══════════════════════════════════════════════════════════════════════════════
 # CHECK 3 — Daily trade count within MAX_DAILY_TRADES
 # ══════════════════════════════════════════════════════════════════════════════
-print(f"\n{BOLD}[3/20] Daily Trade Count{RESET}")
+print(f"\n{BOLD}[3/21] Daily Trade Count{RESET}")
 if not alpaca_ok:
     report.add("Daily Trade Count", "WARN", "Alpaca not configured")
 else:
@@ -339,7 +340,7 @@ else:
 # ══════════════════════════════════════════════════════════════════════════════
 # CHECK 4 — Portfolio above daily loss limit
 # ══════════════════════════════════════════════════════════════════════════════
-print(f"\n{BOLD}[4/20] Portfolio & Daily Loss Limit{RESET}")
+print(f"\n{BOLD}[4/21] Portfolio & Daily Loss Limit{RESET}")
 if not alpaca_ok:
     report.add("Daily Loss Limit", "WARN", "Alpaca not configured")
 else:
@@ -371,7 +372,7 @@ else:
 # ══════════════════════════════════════════════════════════════════════════════
 # CHECK 5 — GitHub Actions ran today (predictions written today)
 # ══════════════════════════════════════════════════════════════════════════════
-print(f"\n{BOLD}[5/20] GitHub Actions / Daily Scan{RESET}")
+print(f"\n{BOLD}[5/21] GitHub Actions / Daily Scan{RESET}")
 if not db_ok:
     report.add("Daily Scan (ARGUS)", "WARN", "Supabase not configured — cannot verify")
 else:
@@ -405,7 +406,7 @@ else:
 # ══════════════════════════════════════════════════════════════════════════════
 # CHECK 6 — ORACLE ran and saved learnings this week
 # ══════════════════════════════════════════════════════════════════════════════
-print(f"\n{BOLD}[6/20] ORACLE Learnings{RESET}")
+print(f"\n{BOLD}[6/21] ORACLE Learnings{RESET}")
 if not db_ok:
     report.add("ORACLE Learnings", "WARN", "Supabase not configured — cannot verify")
 else:
@@ -444,7 +445,7 @@ else:
 # ══════════════════════════════════════════════════════════════════════════════
 # CHECK 7 — No positions >20% underwater without a stop loss
 # ══════════════════════════════════════════════════════════════════════════════
-print(f"\n{BOLD}[7/20] Deep Underwater Positions{RESET}")
+print(f"\n{BOLD}[7/21] Deep Underwater Positions{RESET}")
 if not alpaca_ok:
     report.add("Deep Underwater Check", "WARN", "Alpaca not configured")
 elif not alpaca_positions:
@@ -487,7 +488,7 @@ else:
 # ══════════════════════════════════════════════════════════════════════════════
 # CHECK 8 — Trailing stops active on positions up >3%
 # ══════════════════════════════════════════════════════════════════════════════
-print(f"\n{BOLD}[8/20] Trailing Stop Coverage{RESET}")
+print(f"\n{BOLD}[8/21] Trailing Stop Coverage{RESET}")
 if not alpaca_ok:
     report.add("Trailing Stop Coverage", "WARN", "Alpaca not configured")
 elif not alpaca_positions:
@@ -521,7 +522,7 @@ else:
 # ══════════════════════════════════════════════════════════════════════════════
 # CHECK 9 — Buying power is not near zero
 # ══════════════════════════════════════════════════════════════════════════════
-print(f"\n{BOLD}[9/20] Buying Power{RESET}")
+print(f"\n{BOLD}[9/21] Buying Power{RESET}")
 if not alpaca_ok:
     report.add("Buying Power", "WARN", "Alpaca not configured")
 else:
@@ -547,7 +548,7 @@ else:
 # ══════════════════════════════════════════════════════════════════════════════
 # CHECK 10 — XGBoost model exists and is fresh
 # ══════════════════════════════════════════════════════════════════════════════
-print(f"\n{BOLD}[10/20] XGBoost Model Freshness{RESET}")
+print(f"\n{BOLD}[10/21] XGBoost Model Freshness{RESET}")
 try:
     from config import MODEL_PATH, FEATURE_NAMES_PATH
 
@@ -594,7 +595,7 @@ except Exception as e:
 # A silent `pass` in get_partial_exit_history() returned {} on DB failure,
 # making AEGIS think T1/T2 had never fired → double partial exits on live money.
 # ══════════════════════════════════════════════════════════════════════════════
-print(f"\n{BOLD}[11/20] Partial Exit DB Accessibility{RESET}")
+print(f"\n{BOLD}[11/21] Partial Exit DB Accessibility{RESET}")
 if not db_ok:
     report.add("Partial Exit DB", "WARN", "Supabase not configured — cannot verify")
 else:
@@ -620,7 +621,7 @@ else:
 # Bug found 2026-05-29: both daily_scan.yml and oracle.yml had '0 2 * * 2-6'
 # cron → ORACLE ran twice nightly, doubled Supabase writes + API spend.
 # ══════════════════════════════════════════════════════════════════════════════
-print(f"\n{BOLD}[12/20] ORACLE Double-Run Guard{RESET}")
+print(f"\n{BOLD}[12/21] ORACLE Double-Run Guard{RESET}")
 try:
     import re
     scan_yml = ".github/workflows/daily_scan.yml"
@@ -657,7 +658,7 @@ except Exception as e:
 # Bug found 2026-05-29: trail_stops.yml + eod.yml could run simultaneously
 # at 3:45/3:50/4:00 PM ET → concurrent partial exits before DB records land.
 # ══════════════════════════════════════════════════════════════════════════════
-print(f"\n{BOLD}[13/20] AEGIS Concurrency Guard{RESET}")
+print(f"\n{BOLD}[13/21] AEGIS Concurrency Guard{RESET}")
 try:
     missing_concurrency = []
     for yml in [".github/workflows/trail_stops.yml", ".github/workflows/eod.yml"]:
@@ -684,7 +685,7 @@ except Exception as e:
 # Bug found 2026-05-29: defaulted True → iron butterfly orders submitted
 # on any deployment without explicit ENABLE_OPTIONS=false env var.
 # ══════════════════════════════════════════════════════════════════════════════
-print(f"\n{BOLD}[14/20] Options Safety Gate{RESET}")
+print(f"\n{BOLD}[14/21] Options Safety Gate{RESET}")
 try:
     from config import ENABLE_OPTIONS
     if ENABLE_OPTIONS:
@@ -703,7 +704,7 @@ except Exception as e:
 # Bug found 2026-05-29: DAY trade retry block used KELLY_LOSS_PCT/MOVE_TARGET_PCT
 # instead of DAY_TRADE_STOP_PCT/DAY_TRADE_TARGET_PCT → swing bracket on DAY trades.
 # ══════════════════════════════════════════════════════════════════════════════
-print(f"\n{BOLD}[15/20] DAY Trade Bracket Parameters{RESET}")
+print(f"\n{BOLD}[15/21] DAY Trade Bracket Parameters{RESET}")
 try:
     from config import (DAY_TRADE_STOP_PCT, DAY_TRADE_TARGET_PCT,
                         KELLY_LOSS_PCT, MOVE_TARGET_PCT)
@@ -731,7 +732,7 @@ except Exception as e:
 # CHECK 16 — Partial exit fractions must sum < 1.0
 # T1 + T2 must always leave a non-zero remaining tranche to ride the trailing stop.
 # ══════════════════════════════════════════════════════════════════════════════
-print(f"\n{BOLD}[16/20] Partial Exit Fractions{RESET}")
+print(f"\n{BOLD}[16/21] Partial Exit Fractions{RESET}")
 try:
     from config import (PARTIAL_EXIT_TIER1_FRACTION, PARTIAL_EXIT_TIER2_FRACTION,
                         PARTIAL_EXIT_TIER1_TRIGGER, PARTIAL_EXIT_TIER2_TRIGGER,
@@ -761,7 +762,7 @@ except Exception as e:
 # ══════════════════════════════════════════════════════════════════════════════
 # CHECK 17 — Dashboard API is reachable and returns valid JSON
 # ══════════════════════════════════════════════════════════════════════════════
-print(f"\n{BOLD}[17/20] Dashboard API Health{RESET}")
+print(f"\n{BOLD}[17/21] Dashboard API Health{RESET}")
 try:
     import urllib.request, json as _json
     _dashboard_url = "https://illuminati-dashboard.pages.dev/api/dashboard"
@@ -790,7 +791,7 @@ except Exception as e:
 # Bug found 2026-05-29: both illuminati launchd jobs had exit code 126
 # (not executable) — AEGIS and scan backup layers were silently not running.
 # ══════════════════════════════════════════════════════════════════════════════
-print(f"\n{BOLD}[18/20] Mac launchd Job Health{RESET}")
+print(f"\n{BOLD}[18/21] Mac launchd Job Health{RESET}")
 try:
     import subprocess, platform
     if platform.system() != "Darwin":
@@ -832,7 +833,7 @@ except Exception as e:
 # Added 2026-06-01 after HOOD (-$539) and WOLF (-$554) were bought Fri 2:09 PM
 # and gapped through their stops over the weekend. Verify the guard is on.
 # ══════════════════════════════════════════════════════════════════════════════
-print(f"\n{BOLD}[19/20] Weekend-Gap Protection{RESET}")
+print(f"\n{BOLD}[19/21] Weekend-Gap Protection{RESET}")
 try:
     from config import BLOCK_FRIDAY_PM_ENTRIES, FRIDAY_ENTRY_CUTOFF_ET
     if BLOCK_FRIDAY_PM_ENTRIES:
@@ -855,7 +856,7 @@ except Exception as e:
 # Added 2026-06-01 after ON was bought 5x in a week (averaging up into a decline).
 # Verify the anti-accumulation cap is configured sanely.
 # ══════════════════════════════════════════════════════════════════════════════
-print(f"\n{BOLD}[20/20] Entry Cap Per Ticker{RESET}")
+print(f"\n{BOLD}[20/21] Entry Cap Per Ticker{RESET}")
 try:
     from config import MAX_ENTRIES_PER_TICKER, ENTRY_CAP_WINDOW_DAYS
     if MAX_ENTRIES_PER_TICKER >= 1 and ENTRY_CAP_WINDOW_DAYS >= 1:
@@ -871,6 +872,44 @@ except ImportError:
                "MAX_ENTRIES_PER_TICKER not in config.py — entry cap missing")
 except Exception as e:
     report.add("Entry Cap Per Ticker", "WARN", str(e)[:80])
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# CHECK 21 — Catastrophic-day circuit breakers configured
+# Added 2026-06-01 after autopsy of 30d: every big red day = one of three
+# patterns. Verify all three breakers are armed and sane.
+#   (A) same-day re-entry lockout  — RYOJ 13x stop-outs = -$4,190
+#   (B) hard per-trade max loss    — FLY/VOYG/YMAT -16%/-15%/-11% (stop didn't fire)
+#   (C) daily realized-loss halt   — May 27 ran to -$4,776 unchecked
+# ══════════════════════════════════════════════════════════════════════════════
+print(f"\n{BOLD}[21/21] Catastrophic-Day Circuit Breakers{RESET}")
+try:
+    from config import (BLOCK_SAME_DAY_REENTRY, HARD_MAX_LOSS_PCT,
+                        DAILY_REALIZED_LOSS_HALT_USD, DAILY_REALIZED_LOSS_HALT_PCT,
+                        KELLY_LOSS_PCT, BANKROLL)
+    issues = []
+    if not BLOCK_SAME_DAY_REENTRY:
+        issues.append("same-day re-entry lockout OFF (RYOJ 13x spiral risk)")
+    # hard max loss must be LOOSER than the normal stop (a safety net below it)
+    if HARD_MAX_LOSS_PCT <= KELLY_LOSS_PCT:
+        issues.append(f"HARD_MAX_LOSS_PCT ({HARD_MAX_LOSS_PCT:.0%}) <= normal stop "
+                      f"({KELLY_LOSS_PCT:.0%}) — would fight the stop")
+    if HARD_MAX_LOSS_PCT <= 0 or HARD_MAX_LOSS_PCT > 0.25:
+        issues.append(f"HARD_MAX_LOSS_PCT {HARD_MAX_LOSS_PCT:.0%} out of sane range")
+    _halt = min(DAILY_REALIZED_LOSS_HALT_USD, BANKROLL * DAILY_REALIZED_LOSS_HALT_PCT)
+    if _halt <= 0:
+        issues.append("daily realized-loss halt floor is zero/negative")
+    if issues:
+        report.add("Circuit Breakers", "FAIL", "; ".join(issues))
+    else:
+        report.add("Circuit Breakers", "PASS",
+                   f"same-day lockout ON · hard max -{HARD_MAX_LOSS_PCT*100:.0f}% · "
+                   f"daily halt -${_halt:,.0f}")
+except ImportError as ie:
+    report.add("Circuit Breakers", "FAIL",
+               f"circuit-breaker config missing: {str(ie)[:80]}")
+except Exception as e:
+    report.add("Circuit Breakers", "WARN", str(e)[:80])
 
 
 # ══════════════════════════════════════════════════════════════════════════════

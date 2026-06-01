@@ -170,6 +170,28 @@ FRIDAY_ENTRY_CUTOFF_ET  = 14.0   # block new entries after 2:00 PM ET on Fridays
 MAX_ENTRIES_PER_TICKER  = 2      # max buy fills per ticker within the window
 ENTRY_CAP_WINDOW_DAYS   = 5      # rolling window for counting entries
 
+# ── Catastrophic-day circuit breakers (added 2026-06-01) ──────────────────────
+# Diagnosed from 30 days of paper trading: every big red day was caused by ONE
+# of three patterns. Each breaker below targets a confirmed pattern.
+#
+# (A) RE-ENTRY SPIRAL — RYOJ stopped out 13× in a single day (2026-05-27) for
+#     -$4,190 = 88% of that -$4,776 day. Once a ticker stops out, lock it for
+#     the rest of the trading day. The biggest single fix.
+BLOCK_SAME_DAY_REENTRY  = True   # after a stop-out, no re-entry on that ticker today
+
+# (B) STOP DIDN'T FIRE — FLY -15.9%, VOYG -15.5%, YMAT -10.8% each lost ~$1,000+
+#     on ONE trade (marked "manual", not sl_hit) = stop never executed. The 3%
+#     stop should never let a position reach -8%. AEGIS force-closes anything
+#     past this hard ceiling at market — a safety net under the normal stop.
+HARD_MAX_LOSS_PCT       = 0.08   # force-close at market if a position is down >8%
+
+# (C) NO DAILY KILL-SWITCH — May 27 ran unchecked to -$4,776. The existing
+#     DAILY_LOSS_LIMIT_PCT checks slow account-equity swing; this checks REALIZED
+#     closed-trade P&L today and halts ALL new entries once it breaches the floor.
+#     Open positions keep being managed by AEGIS; only NEW entries are blocked.
+DAILY_REALIZED_LOSS_HALT_USD = 2000.0   # halt new entries after -$2,000 realized today
+DAILY_REALIZED_LOSS_HALT_PCT = 0.03     # ...or -3% of bankroll, whichever hits first
+
 # ── Partial Exit (Two-Tier Scale-Out) ─────────────────────────────────────────
 # THREE-STAGE EXIT STRATEGY:
 #   Tier 1 at +7%:  close 20% of ORIGINAL position, move stop to breakeven

@@ -165,6 +165,57 @@ def check_trade(
     except Exception as e:
         print(f"[THEMIS] Entry-cap check failed for {ticker}: {e} — allowing trade")
 
+    # ── Check 1a4: Same-day re-entry lockout (anti-spiral circuit breaker) ─────
+    # The single worst pattern in the data: RYOJ stopped out 13x in ONE day
+    # (2026-05-27) for -$4,190. Once a ticker stops out today, lock it for the
+    # rest of the day — one loss, not thirteen.
+    try:
+        from config import BLOCK_SAME_DAY_REENTRY, LOSS_COOLDOWN_PCT
+        from execution.alpaca import get_closed_trade_pnl
+        if BLOCK_SAME_DAY_REENTRY:
+            _today = datetime.now(timezone.utc).strftime("%Y-%m-%d")
+            for _t in get_closed_trade_pnl(days=1):
+                if _t.get("ticker") != ticker:
+                    continue
+                if not str(_t.get("closed_at", "")).startswith(_today):
+                    continue
+                _pnl = _t.get("realized_pnl", 0)
+                _entry = _t.get("entry_price", 0) or 1
+                _qty = abs(_t.get("qty", 0)) or 1
+                _pct = _pnl / (_entry * _qty) if _entry * _qty else 0
+                if _pct < -LOSS_COOLDOWN_PCT:   # a real loss today
+                    return False, (
+                        f"Same-day lockout: {ticker} already stopped out today "
+                        f"(${_pnl:+,.0f}) — no re-entry until tomorrow "
+                        f"(anti-spiral; RYOJ lost $4,190 from 13 re-entries)"
+                    )
+    except Exception as e:
+        print(f"[THEMIS] Same-day re-entry check failed for {ticker}: {e} — allowing trade")
+
+    # ── Check 1a5: Daily realized-loss kill-switch ────────────────────────────
+    # May 27 ran unchecked to -$4,776. Once today's REALIZED (closed) P&L breaches
+    # the floor, halt ALL new entries for the day. AEGIS still manages open
+    # positions — this only blocks opening NEW risk while the day is bleeding.
+    try:
+        from config import (DAILY_REALIZED_LOSS_HALT_USD,
+                            DAILY_REALIZED_LOSS_HALT_PCT, BANKROLL)
+        from execution.alpaca import get_closed_trade_pnl
+        _today = datetime.now(timezone.utc).strftime("%Y-%m-%d")
+        _realized_today = sum(
+            _t.get("realized_pnl", 0) for _t in get_closed_trade_pnl(days=1)
+            if str(_t.get("closed_at", "")).startswith(_today)
+        )
+        _floor = -min(DAILY_REALIZED_LOSS_HALT_USD,
+                      BANKROLL * DAILY_REALIZED_LOSS_HALT_PCT)
+        if _realized_today <= _floor:
+            return False, (
+                f"Daily loss halt: realized ${_realized_today:+,.0f} today "
+                f"(floor ${_floor:,.0f}) — NO new entries for the rest of the day. "
+                f"Open positions still managed by AEGIS."
+            )
+    except Exception as e:
+        print(f"[THEMIS] Daily-loss-halt check failed for {ticker}: {e} — allowing trade")
+
     # ── Check 1b: Recent-loss cooldown ────────────────────────────────────────
     # Prevent "death by a thousand cuts" pattern where same volume/RSI signal
     # keeps firing on a declining stock, system keeps re-buying after each
