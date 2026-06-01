@@ -589,11 +589,47 @@ def get_closed_trade_pnl(days: int = 60) -> list[dict]:
         client = _get_client()
         after  = (datetime.now() - timedelta(days=days)).strftime("%Y-%m-%dT00:00:00Z")
 
-        all_orders = client.get_orders(GetOrdersRequest(
-            status=QueryOrderStatus.ALL,
-            after=after,
-            limit=500,
-        ))
+        # CRITICAL FIX (2026-06-02): the old code fetched a SINGLE page of 500
+        # orders with no pagination. A 30-day window routinely has 500+ orders,
+        # so the oldest BUY fills were silently dropped — their matching SELLs
+        # then had no entry lot to pair against, producing phantom/mis-priced
+        # round-trips. Result: this function reported -$5,003 when the Alpaca
+        # account was actually +$3,592 (off by $8,307). Worse, the circuit
+        # breakers (same-day lockout, daily halt) call this function, so they
+        # were firing on fictional losses. Now paginate FULLY (oldest→newest)
+        # so FIFO sees every fill and every share matches exactly once.
+        all_orders = []
+        until = None
+        for _page in range(20):   # 20 × 500 = 10k orders, far beyond any window
+            req = GetOrdersRequest(
+                status=QueryOrderStatus.ALL,
+                after=after,
+                limit=500,
+                direction="desc",
+                until=until,
+            )
+            batch = client.get_orders(req)
+            if not batch:
+                break
+            all_orders.extend(batch)
+            if len(batch) < 500:
+                break
+            # Page back via the oldest submitted_at in this batch
+            oldest = batch[-1].submitted_at
+            if oldest is None:
+                break
+            until = oldest
+
+        # De-dupe by order id (pagination boundaries can overlap by one)
+        _seen = set()
+        _deduped = []
+        for o in all_orders:
+            oid = str(getattr(o, "id", ""))
+            if oid in _seen:
+                continue
+            _seen.add(oid)
+            _deduped.append(o)
+        all_orders = _deduped
 
         # Keep only filled orders with a fill price
         filled = [o for o in all_orders
