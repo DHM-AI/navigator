@@ -1,0 +1,39 @@
+name: Weekly Review
+
+# Sunday discipline report — win rate, avg win/loss, profit factor, expectancy,
+# rule violations over a rolling 30 days. Judge the distribution, not any one day
+# (TRADING_PRINCIPLES.md #4). Read-only — never trades.
+
+on:
+  schedule:
+    - cron: '0 15 * * 0'   # Sunday 11:00 AM ET (15:00 UTC)
+  workflow_dispatch:         # run manually anytime
+
+jobs:
+  review:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python 3.11
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+          cache: 'pip'
+
+      - name: Install dependencies
+        run: pip install -r requirements-agent.txt
+
+      - name: Run weekly review
+        run: python weekly_review.py
+        env:
+          SUPABASE_URL:       ${{ secrets.SUPABASE_URL }}
+          SUPABASE_KEY:       ${{ secrets.SUPABASE_KEY }}
+          SUPABASE_SERVICE_KEY: ${{ secrets.SUPABASE_SERVICE_KEY }}
+          SLACK_WEBHOOK_URL:  ${{ secrets.SLACK_WEBHOOK_URL }}
+          ALPACA_API_KEY:     ${{ secrets.ALPACA_API_KEY }}
+          ALPACA_SECRET_KEY:  ${{ secrets.ALPACA_SECRET_KEY }}
+          ALPACA_BASE_URL:    ${{ secrets.ALPACA_BASE_URL }}
+          ALPACA_LIVE_MODE:   ${{ secrets.ALPACA_LIVE_MODE }}

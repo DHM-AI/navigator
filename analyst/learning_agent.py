@@ -54,6 +54,18 @@ Write a concise post-mortem in 4 bullet points:
 3. What should the system do differently next week?
 4. Any market regime observations (trending/volatile/quiet)?
 
+IMPORTANT — before recommending any weight change, classify each miss by CAUSE:
+- EXOGENOUS (don't down-weight signals): weekend/overnight GAP through the stop,
+  a market-wide reversal, or an earnings surprise. These are entry-timing /
+  variance, not signal failure. Example: 2026-06-01 HOOD scored 89 (highest) yet
+  lost most — it gapped down over a weekend. The signal was fine; the entry
+  timing wasn't. Guardrails (no Friday-PM entries, max 2 entries/ticker) address
+  these, NOT weight changes.
+- ENDOGENOUS (consider down-weighting): the signal genuinely fired on a setup
+  that played out the opposite way in normal continuous trading.
+Only recommend weight adjustments for ENDOGENOUS misses. A 60% win-rate system
+will have losing streaks by design — distinguish variance from degradation.
+
 Be specific and actionable. No filler."""
 
 
