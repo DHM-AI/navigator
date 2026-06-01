@@ -104,6 +104,67 @@ def check_trade(
     except Exception as e:
         print(f"[THEMIS] Pending-order dedup check failed for {ticker}: {e} — allowing trade")
 
+    # ── Check 1a2: No new entries late Friday (weekend-gap protection) ────────
+    # A stop can't protect against a Monday gap-down. On 2026-06-01 HOOD and WOLF
+    # were both bought Fri 2:09 PM and gapped through their stops over the weekend
+    # (-$539 / -$554). Block NEW entries after the Friday cutoff; the same setup
+    # can be taken Monday when stops work. Existing positions are untouched.
+    try:
+        from config import BLOCK_FRIDAY_PM_ENTRIES, FRIDAY_ENTRY_CUTOFF_ET
+        if BLOCK_FRIDAY_PM_ENTRIES:
+            from zoneinfo import ZoneInfo
+            now_et = datetime.now(ZoneInfo("America/New_York"))
+            # weekday(): Mon=0 … Fri=4 … Sun=6
+            et_hour_frac = now_et.hour + now_et.minute / 60.0
+            if now_et.weekday() == 4 and et_hour_frac >= FRIDAY_ENTRY_CUTOFF_ET:
+                return False, (
+                    f"Friday {now_et.strftime('%H:%M')} ET — no new entries after "
+                    f"{FRIDAY_ENTRY_CUTOFF_ET:.0f}:00 ET (weekend-gap protection). "
+                    f"Stops can't cover a Monday gap; take this setup Monday AM."
+                )
+    except Exception as e:
+        print(f"[THEMIS] Friday-entry check failed for {ticker}: {e} — allowing trade")
+
+    # ── Check 1a3: Max entries per ticker (anti-accumulation) ─────────────────
+    # The duplicate check (Check 1) relies on the in-memory open_positions list,
+    # which clearly missed ON on 2026-06-01 (bought 5× in a week, averaging up
+    # into a decline). Count actual BUY fills from Alpaca over a rolling window
+    # and cap them — independent of the position snapshot, so it can't be fooled
+    # by stale state or brief close/reopen between scans.
+    try:
+        from config import MAX_ENTRIES_PER_TICKER, ENTRY_CAP_WINDOW_DAYS
+        from execution.alpaca import _get_client, is_configured, order_status
+        from alpaca.trading.requests import GetOrdersRequest as _GOR3
+        from alpaca.trading.enums import QueryOrderStatus as _QOS3
+        if is_configured():
+            _since = (datetime.now(timezone.utc)
+                      - __import__("datetime").timedelta(days=ENTRY_CAP_WINDOW_DAYS)
+                      ).strftime("%Y-%m-%dT00:00:00Z")
+            _recent = _get_client().get_orders(
+                _GOR3(status=_QOS3.ALL, after=_since, limit=500))
+            # Count filled BUY entries for this ticker (exclude bracket children,
+            # stops, and sells — only genuine new-entry buy fills count).
+            _entry_fills = 0
+            for _o in _recent:
+                if _o.symbol != ticker:
+                    continue
+                if getattr(_o, "parent_order_id", None):
+                    continue
+                if "buy" not in str(getattr(_o, "side", "")).lower():
+                    continue
+                if str(getattr(_o, "type", "")).lower() in ("stop", "trailing_stop"):
+                    continue
+                if order_status(_o) in ("filled", "partially_filled"):
+                    _entry_fills += 1
+            if _entry_fills >= MAX_ENTRIES_PER_TICKER:
+                return False, (
+                    f"Entry cap: {ticker} already has {_entry_fills} buy fills in "
+                    f"{ENTRY_CAP_WINDOW_DAYS}d (max {MAX_ENTRIES_PER_TICKER}) — "
+                    f"no accumulating into the same name (the ON 5x pattern)"
+                )
+    except Exception as e:
+        print(f"[THEMIS] Entry-cap check failed for {ticker}: {e} — allowing trade")
+
     # ── Check 1b: Recent-loss cooldown ────────────────────────────────────────
     # Prevent "death by a thousand cuts" pattern where same volume/RSI signal
     # keeps firing on a declining stock, system keeps re-buying after each

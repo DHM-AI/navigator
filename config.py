@@ -150,6 +150,26 @@ LOSS_COOLDOWN_HOURS    = 48     # block re-entry for 2 trading days
 # exit cleanly. Skip them entirely.
 MIN_STOCK_PRICE        = 5.00   # below this → skip the pick
 
+# ── Weekend-gap protection (added 2026-06-01) ─────────────────────────────────
+# A stop loss CANNOT protect against a weekend gap-down: the stock opens Monday
+# far below Friday's close and the stop fills well past its trigger. On 2026-06-01
+# HOOD (-$539) and WOLF (-$554) were both bought Fri 2:09 PM and gapped through
+# their ~3% stops to ~7% losses. Don't open NEW positions late Friday — take the
+# same setup Monday morning when stops actually work. Existing positions are
+# unaffected; AEGIS still manages their trailing stops over the weekend.
+BLOCK_FRIDAY_PM_ENTRIES = True   # set False to allow Friday-afternoon entries
+FRIDAY_ENTRY_CUTOFF_ET  = 14.0   # block new entries after 2:00 PM ET on Fridays
+
+# ── Max entries per ticker (added 2026-06-01) ─────────────────────────────────
+# Stops the "accumulate into a loser" pattern. On 2026-06-01 ON was bought 5×
+# in a week ($114→$122→$124→$123→$120, averaging UP into a decline). The
+# loss-cooldown only fires AFTER a position closes red — it can't stop adds while
+# still holding. This caps total buy fills per ticker over a rolling window,
+# counted from Alpaca directly (not the in-memory position list, which the
+# duplicate check relied on and which clearly missed ON).
+MAX_ENTRIES_PER_TICKER  = 2      # max buy fills per ticker within the window
+ENTRY_CAP_WINDOW_DAYS   = 5      # rolling window for counting entries
+
 # ── Partial Exit (Two-Tier Scale-Out) ─────────────────────────────────────────
 # THREE-STAGE EXIT STRATEGY:
 #   Tier 1 at +7%:  close 20% of ORIGINAL position, move stop to breakeven
