@@ -101,11 +101,18 @@ XGB_WEIGHT       = 0.70
 SENTIMENT_WEIGHT = 0.30
 
 # ── Kelly Criterion / position sizing ─────────────────────────────────────────
-BANKROLL          = float(os.getenv("BANKROLL", "50000"))
+# Sizing rebased 2026-06-02 (Option 3) to the REAL account, not the old $50k.
+# Account was ~$153k; sizing off $50k made every position only ~5% of equity.
+# New base: real account. Per-trade 8% × 10 positions = ~80% deployed, 20% cash
+# buffer, diversified. At $153k: ~$12.3k/trade, ~$370 risk/trade @ 3% stop.
+# IMPORTANT: BANKROLL also reads from env/GitHub secret — the `BANKROLL` secret
+# MUST be updated to the live account value or production keeps using the old
+# number. Default here bumped so local runs match.
+BANKROLL          = float(os.getenv("BANKROLL", "153000"))
 KELLY_WIN_PCT     = 0.10   # expected gain on a win (trailing stops avg ~10% on winners)
 KELLY_LOSS_PCT    = 0.03   # expected loss if wrong (3% stop)
 KELLY_FRACTION    = 0.5    # use half-Kelly for safety
-MAX_POSITION_PCT  = 0.15   # max 15% of bankroll per trade (raised to support 10%/mo goal)
+MAX_POSITION_PCT  = 0.08   # 8% per trade (was 15%; rebased to real account, Option 3)
 DAILY_LOSS_LIMIT_PCT = 0.05  # halt trading if down 5% in a day
 
 # ── Sentiment Guard ───────────────────────────────────────────────────────────
@@ -189,6 +196,9 @@ HARD_MAX_LOSS_PCT       = 0.08   # force-close at market if a position is down >
 #     DAILY_LOSS_LIMIT_PCT checks slow account-equity swing; this checks REALIZED
 #     closed-trade P&L today and halts ALL new entries once it breaches the floor.
 #     Open positions keep being managed by AEGIS; only NEW entries are blocked.
+# At Option-3 sizing (~$370 risk/trade @ 3% stop), -$2,000 ≈ 5-6 stopped trades
+# in a day before the kill-switch — a sensible "today is going badly, stop" line.
+# min($2,000, 3%×bankroll): at $153k that's min(2000, 4590) = $2,000.
 DAILY_REALIZED_LOSS_HALT_USD = 2000.0   # halt new entries after -$2,000 realized today
 DAILY_REALIZED_LOSS_HALT_PCT = 0.03     # ...or -3% of bankroll, whichever hits first
 

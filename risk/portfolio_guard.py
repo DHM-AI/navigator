@@ -20,7 +20,7 @@ Usage in agent.py:
 import yfinance as yf
 
 # ── Config ────────────────────────────────────────────────────────────────────
-MAX_OPEN_POSITIONS  = 15     # max concurrent holdings
+MAX_OPEN_POSITIONS  = 10     # max concurrent holdings (Option 3: 8%×10 = ~80% deployed)
 MAX_SECTOR_PCT      = 0.35   # max 35% portfolio in one sector
 MAX_DAILY_TRADES    = 20     # max new auto-executions per day
 MAX_DIRECTION_PCT   = 0.80   # warn if >80% of positions same direction
