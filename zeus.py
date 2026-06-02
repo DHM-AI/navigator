@@ -765,27 +765,47 @@ except Exception as e:
 # CHECK 17 — Dashboard API is reachable and returns valid JSON
 # ══════════════════════════════════════════════════════════════════════════════
 print(f"\n{BOLD}[17/23] Dashboard API Health{RESET}")
-try:
-    import urllib.request, json as _json
-    _dashboard_url = "https://illuminati-dashboard.pages.dev/api/dashboard"
-    _req = urllib.request.Request(_dashboard_url, headers={"User-Agent": "ZEUS-health"})
-    with urllib.request.urlopen(_req, timeout=10) as _r:
-        _status = _r.status
-        _body = _r.read(512)   # just enough to confirm JSON
-    if _status == 200:
-        try:
-            _parsed = _json.loads(_body + b"}")  # partial parse check
-        except Exception:
-            pass  # truncated body is fine — we got a 200
-        report.add("Dashboard API", "PASS",
-                   f"illuminati-dashboard.pages.dev responded HTTP {_status}")
-    else:
-        report.add("Dashboard API", "FAIL",
-                   f"Dashboard returned HTTP {_status} — may be down or 1102 error")
-except Exception as e:
-    report.add("Dashboard API", "WARN",
-               f"Could not reach dashboard: {str(e)[:80]} "
-               f"(network may be unavailable from GitHub Actions)")
+# RETRY 2026-06-02: a SINGLE ping false-alarmed. The worker returns 503 ONLY on a
+# cold compute with no stale cache yet (first hit after >10 min idle + a transient
+# upstream hiccup); the very next call serves 200. A one-shot check caught that
+# cold start and warned even though the dashboard was healthy. Retry up to 3x —
+# the first ping also warms the worker, so attempt 2 reflects steady state. A
+# stale-fallback 200 (X-Illuminati-Stale) still counts as healthy (degraded-but-up).
+import time as _time
+_dashboard_url = "https://illuminati-dashboard.pages.dev/api/dashboard"
+_last = None
+_ok = False
+_stale_served = False
+for _attempt in range(1, 4):
+    try:
+        import urllib.request
+        _req = urllib.request.Request(_dashboard_url, headers={"User-Agent": "ZEUS-health"})
+        with urllib.request.urlopen(_req, timeout=10) as _r:
+            _status = _r.status
+            _stale_served = _r.headers.get("X-Illuminati-Stale") == "1"
+            _r.read(64)
+        _last = f"HTTP {_status}"
+        if _status == 200:
+            _ok = True
+            break
+    except Exception as e:
+        _last = str(e)[:80]
+        # HTTP 503 raised as HTTPError — keep retrying (likely cold start)
+    if _attempt < 3:
+        _time.sleep(2)
+if _ok:
+    _detail = "illuminati-dashboard.pages.dev responded HTTP 200"
+    if _attempt > 1:
+        _detail += f" (after {_attempt} tries — cold start warmed)"
+    if _stale_served:
+        _detail += " · serving stale cache (upstream degraded but UP)"
+    report.add("Dashboard API", "PASS", _detail)
+else:
+    # 3 straight failures = a real outage, not a cold start
+    _is_net = "urlopen" in (_last or "") or "timed out" in (_last or "").lower()
+    report.add("Dashboard API", "WARN" if _is_net else "FAIL",
+               f"Dashboard unhealthy after 3 tries: {_last} "
+               f"({'network unavailable from runner' if _is_net else 'genuine outage / 1102'})")
 
 
 # ══════════════════════════════════════════════════════════════════════════════
