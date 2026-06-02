@@ -93,6 +93,9 @@ TOP_N_CLAUDE_ANALYSIS = 5
 MOVE_TARGET_PCT     = 0.20   # 20% ceiling TP — trailing stops handle normal exits at 3-7%
 
 # ── Day trade bracket parameters (tighter than swing) ────────────────────────
+# PAUSED 2026-06-02: DAY trades (added 5/29) were one of three changes during the
+# +$7.6k→-$5.1k swing; no standalone validation. Off until validated separately.
+ENABLE_DAY_TRADES    = False  # when False, day-trade setups use the normal swing bracket
 DAY_TRADE_STOP_PCT   = 0.015  # -1.5% stop (tighter than swing's -3%)
 DAY_TRADE_TARGET_PCT = 0.03   # +3% take profit (quick win, closed by DUSK at 3:50 PM)
 
@@ -238,6 +241,11 @@ AUTO_EXECUTE_MIN_SCORE      = 75   # raised from 70 — confidence labels now ba
                                    # blended XGB score so Medium starts at 65;
                                    # raising the floor keeps execution selective
 HIGH_SCORE_BYPASS_THRESHOLD = 85   # Low-conf trades only if model is REALLY sure
+# DISABLED 2026-06-02: the "Option B" low-confidence bypass (landed 5/28) was one
+# of three changes that coincided with the +$7.6k→-$5.1k swing. Reverting to the
+# config that was demonstrably profitable through 5/26: only trade High/Medium
+# confidence picks. Set True to re-enable the score≥85 Low-conf model-only path.
+ENABLE_HIGH_SCORE_BYPASS    = False
 
 # ── Paths ─────────────────────────────────────────────────────────────────────
 LOGS_DIR            = "logs"

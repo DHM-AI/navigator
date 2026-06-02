@@ -61,7 +61,15 @@ def _determine_duration(technicals: dict, earnings_days: int | None) -> str:
     rsi_strong  = 62 <= rsi_val <= 71 or 29 <= rsi_val <= 38  # directional but NOT extreme
     # DAY trade: strong vol + directional RSI + no BB squeeze + RSI not extreme
     # Exclude extreme RSI (≥72 or ≤28) — those are momentum runners that need the 2-3w bracket
-    if extreme_vol and rsi_strong and not bb and not rsi_extreme:
+    # PAUSED 2026-06-02: DAY trades (added 5/29) were one of three changes that
+    # coincided with the profitability swing and have no standalone validation.
+    # Reverted to swing-only until validated separately. Set ENABLE_DAY_TRADES=True
+    # to re-enable. When off, these setups fall through to the normal swing bracket.
+    try:
+        from config import ENABLE_DAY_TRADES
+    except ImportError:
+        ENABLE_DAY_TRADES = False
+    if ENABLE_DAY_TRADES and extreme_vol and rsi_strong and not bb and not rsi_extreme:
         return "1d (day trade)"
 
     if bb and atr:

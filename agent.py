@@ -127,9 +127,19 @@ def _execute_trades(picks_df: pd.DataFrame, explanations: dict,
     # Allowing the very-high-score model-only path catches those without
     # opening the RYOJ trap (RYOJ scored 78 not 85).
     from config import HIGH_SCORE_BYPASS_THRESHOLD
+    try:
+        from config import ENABLE_HIGH_SCORE_BYPASS
+    except ImportError:
+        ENABLE_HIGH_SCORE_BYPASS = False
     _ALLOWED_CONFIDENCE = {"High", "Medium"}
     score_ok       = picks_df["score"] >= _effective_min_score
-    high_score_ok  = picks_df["score"] >= HIGH_SCORE_BYPASS_THRESHOLD
+    # Bypass DISABLED by default (2026-06-02 revert): only when explicitly enabled
+    # does a score≥85 Low-confidence pick qualify. Otherwise it's purely the
+    # score+confidence gate — the rule that was profitable through 5/26.
+    if ENABLE_HIGH_SCORE_BYPASS:
+        high_score_ok = picks_df["score"] >= HIGH_SCORE_BYPASS_THRESHOLD
+    else:
+        high_score_ok = picks_df["score"] < 0   # never true → bypass off
     confidence_ok  = picks_df.get("confidence", "Low").isin(_ALLOWED_CONFIDENCE)
     qualifies      = high_score_ok | (score_ok & confidence_ok)
     auto_picks     = picks_df[qualifies]
