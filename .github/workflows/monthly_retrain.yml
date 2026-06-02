@@ -1,17 +1,20 @@
 name: Monthly Model Retrain
 
-# Runs on the first Monday of every month at 6 AM ET.
-# Also runs whenever model/trainer.py or signals/ changes are pushed.
-# Keeps the XGBoost model fresh as market conditions evolve.
-
+# PAUSED 2026-06-02: auto-retrain is the prime suspect in the profitability
+# swing — the 5/27 retrain (AUC 0.65→0.76) started LOSING the day it deployed
+# (overfit: better backtest, worse live), and on 6/2 GENESIS auto-pushed yet
+# another fresh model that would have overwritten our rollback to the proven
+# AUC 0.655 model. The scheduled + push triggers are DISABLED so no new model
+# lands automatically. Retrain ONLY manually (workflow_dispatch) after a model
+# has been validated in paper. Re-enable the cron once retrains are trusted.
 on:
-  schedule:
-    - cron: '0 10 1-7 * 1'  # First Monday of the month, 6 AM ET (UTC-4)
-  push:
-    paths:
-      - 'model/trainer.py'
-      - 'signals/technicals.py'
-  workflow_dispatch:           # Manual trigger anytime from Actions tab
+  # schedule:
+  #   - cron: '0 10 1-7 * 1'  # DISABLED — see note above
+  # push:
+  #   paths:
+  #     - 'model/trainer.py'
+  #     - 'signals/technicals.py'
+  workflow_dispatch:           # Manual trigger ONLY (Actions tab) — no auto-retrain
 
 jobs:
   retrain:
