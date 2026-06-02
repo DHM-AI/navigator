@@ -86,8 +86,11 @@ def bb_squeeze(df: pd.DataFrame, window: int = 50) -> dict:
 
 def atr_compression(df: pd.DataFrame, atr_period: int = 14,
                     avg_period: int = 50) -> dict:
+    # "pct" = raw ATR as a % of price (volatility level). Distinct from "ratio"
+    # (current ATR vs its own 50-day avg = compression). pct drives the
+    # volatility filter + ATR-based stop sizing; ratio drives the squeeze signal.
     if not _require_min_rows(df, avg_period + atr_period):
-        return {"triggered": False, "ratio": 1.0}
+        return {"triggered": False, "ratio": 1.0, "pct": 0.0}
     try:
         if _TA_AVAILABLE:
             atr = AverageTrueRange(df["High"], df["Low"], df["Close"],
@@ -97,15 +100,18 @@ def atr_compression(df: pd.DataFrame, atr_period: int = 14,
                               period=atr_period).dropna()
 
         if len(atr) < avg_period:
-            return {"triggered": False, "ratio": 1.0}
+            return {"triggered": False, "ratio": 1.0, "pct": 0.0}
         current_atr = float(atr.iloc[-1])
         avg_atr = float(atr.iloc[-avg_period:].mean())
+        price   = float(df["Close"].iloc[-1])
+        atr_pct = (current_atr / price) if price else 0.0
         if avg_atr == 0:
-            return {"triggered": False, "ratio": 1.0}
+            return {"triggered": False, "ratio": 1.0, "pct": round(atr_pct, 4)}
         ratio = current_atr / avg_atr
-        return {"triggered": ratio < ATR_COMPRESSION_RATIO, "ratio": round(ratio, 3)}
+        return {"triggered": ratio < ATR_COMPRESSION_RATIO,
+                "ratio": round(ratio, 3), "pct": round(atr_pct, 4)}
     except Exception:
-        return {"triggered": False, "ratio": 1.0}
+        return {"triggered": False, "ratio": 1.0, "pct": 0.0}
 
 
 def volume_surge(df: pd.DataFrame, avg_period: int = 20) -> dict:

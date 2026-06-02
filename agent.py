@@ -33,7 +33,8 @@ from analyst.claude_analyst import explain_picks
 from alerts.slack import send_trade_alert
 from risk.portfolio_guard import check_trade, increment_daily_count
 from config import (TOP_N_CLAUDE_ANALYSIS, MIN_SCORE_TO_ALERT,
-                    AUTO_EXECUTE_MIN_SCORE, BANKROLL, ENABLE_OPTIONS_FLOW)
+                    AUTO_EXECUTE_MIN_SCORE, BANKROLL, ENABLE_OPTIONS_FLOW,
+                    ENABLE_VOLATILITY_FILTER, MAX_ENTRY_ATR_PCT)
 import db
 
 
@@ -194,6 +195,19 @@ def _execute_trades(picks_df: pd.DataFrame, explanations: dict,
             _record_block(ticker, "Kelly sizing returned $0 — no position size allocated")
             continue
 
+        # ── Volatility filter (added 2026-06-02) ─────────────────────────────
+        # Block auto-exec on ultra-volatile names (ATR% > MAX_ENTRY_ATR_PCT).
+        # Backtest of real stop-outs: these junk/micro-cap names (e.g. YMAT 37%
+        # ATR, RYOJ 26%) ride any stop straight down and are the true -30% days.
+        # No stop setting fixes them — the only fix is not trading them.
+        _atr_pct = float(row.get("atr_pct", 0.0) or 0.0)
+        if ENABLE_VOLATILITY_FILTER and _atr_pct > MAX_ENTRY_ATR_PCT:
+            _msg = (f"Volatility filter — ATR {_atr_pct*100:.1f}% exceeds "
+                    f"{MAX_ENTRY_ATR_PCT*100:.0f}% cap (too volatile to swing-trade)")
+            print(f"  {ticker}: BLOCKED — {_msg}")
+            _record_block(ticker, _msg)
+            continue
+
         # Hard stop — enforce position + trade limits using in-run counters
         # N-5 fix: refresh open_positions live from Alpaca every 5 picks so
         # the position-count gate doesn't get fooled by stale state from the
@@ -312,7 +326,7 @@ def _execute_trades(picks_df: pd.DataFrame, explanations: dict,
         else:
             result = place_order(ticker, dollar, direction, reason,
                                  execution_path=_execution_path,
-                                 duration=duration)
+                                 duration=duration, atr_pct=_atr_pct)
 
         results.append(result)
         print(f"  {ticker}: {result.get('status')} ${dollar:.0f} {direction}")

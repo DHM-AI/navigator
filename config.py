@@ -99,6 +99,28 @@ ENABLE_DAY_TRADES    = False  # when False, day-trade setups use the normal swin
 DAY_TRADE_STOP_PCT   = 0.015  # -1.5% stop (tighter than swing's -3%)
 DAY_TRADE_TARGET_PCT = 0.03   # +3% take profit (quick win, closed by DUSK at 3:50 PM)
 
+# ── Volatility filter + ATR-based stops (added 2026-06-02) ───────────────────
+# Backtest of 42 real stop-outs (6/2): the flat -3% swing stop sits INSIDE one
+# normal day of noise on every name traded (avg ATR% ~6%). 88% of stopped-out
+# trades recovered above entry within 7 days = noise stopouts, not broken theses.
+# BUT naively widening to 2x ATR LOST -181% — because ultra-volatile junk
+# micro-caps (YMAT 37% ATR, RYOJ 26%) ride a wide stop straight down. The winning
+# combo (backtest: -181% -> +35%, win 21% -> 60%): FILTER out the junk, THEN use
+# ATR stops on the quality names that remain.
+#
+# Part 1 — volatility filter: block auto-exec on names whose ATR% exceeds this.
+# These are lottery tickets no stop setting fixes; they are the real -30% days.
+ENABLE_VOLATILITY_FILTER = True
+MAX_ENTRY_ATR_PCT        = 0.10   # skip auto-trade if 14-day ATR > 10% of price
+#
+# Part 2 — ATR-based stops: stop = entry -/+ (ATR_STOP_MULT x ATR), clamped to
+# [floor, cap]. Position size auto-rescales so $ risk per trade stays constant
+# regardless of how wide the volatility-adjusted stop is (volatility sizing).
+ENABLE_ATR_STOPS   = True
+ATR_STOP_MULT      = 2.0    # 2x ATR = swing-trading standard (research: 1.5-2.5x)
+ATR_STOP_FLOOR_PCT = 0.03   # never tighter than 3% (current behavior as the floor)
+ATR_STOP_CAP_PCT   = 0.10   # never wider than 10% (cap caught the junk in backtest)
+
 # ── Model blending weights ────────────────────────────────────────────────────
 XGB_WEIGHT       = 0.70
 SENTIMENT_WEIGHT = 0.30

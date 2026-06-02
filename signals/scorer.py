@@ -286,6 +286,7 @@ def score_ticker(
         "rsi":                technicals["rsi"]["value"],
         "bb_pct":             technicals["bb"]["width_percentile"],
         "atr_ratio":          technicals["atr"]["ratio"],
+        "atr_pct":            technicals["atr"].get("pct", 0.0),
         "volume_ratio":       technicals["vol"]["ratio"],
         "ema50_pct":          technicals["ema"]["ema50_pct"],
         "sentiment_score":    sentiment.get("score", 0.0),

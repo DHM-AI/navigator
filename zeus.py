@@ -28,6 +28,7 @@ Checks:
  20.  Entry cap per ticker on (blocks accumulating into a loser)
  21.  Catastrophic-day circuit breakers (same-day lockout, hard max-loss, daily halt)
  22.  Market-hours gate on order placement (no after-hours/pre-open fills)
+ 23.  Volatility filter + ATR stops on (no junk micro-caps, no flat-3% noise-stopouts)
 
 Exit code 0 = all good, 1 = at least one FAIL.
 """
@@ -161,7 +162,7 @@ except Exception:
 # ══════════════════════════════════════════════════════════════════════════════
 # CHECK 1 — All open positions have a stop loss order active
 # ══════════════════════════════════════════════════════════════════════════════
-print(f"\n{BOLD}[1/22] Stop Loss Coverage{RESET}")
+print(f"\n{BOLD}[1/23] Stop Loss Coverage{RESET}")
 if not alpaca_ok:
     report.add("Stop Loss Coverage", "WARN",
                "Alpaca not configured — cannot verify stop loss orders")
@@ -280,7 +281,7 @@ else:
 # ══════════════════════════════════════════════════════════════════════════════
 # CHECK 2 — Position count ≤ MAX_OPEN_POSITIONS
 # ══════════════════════════════════════════════════════════════════════════════
-print(f"\n{BOLD}[2/22] Position Count Limit{RESET}")
+print(f"\n{BOLD}[2/23] Position Count Limit{RESET}")
 if not alpaca_ok:
     report.add("Position Count", "WARN", "Alpaca not configured")
 else:
@@ -299,7 +300,7 @@ else:
 # ══════════════════════════════════════════════════════════════════════════════
 # CHECK 3 — Daily trade count within MAX_DAILY_TRADES
 # ══════════════════════════════════════════════════════════════════════════════
-print(f"\n{BOLD}[3/22] Daily Trade Count{RESET}")
+print(f"\n{BOLD}[3/23] Daily Trade Count{RESET}")
 if not alpaca_ok:
     report.add("Daily Trade Count", "WARN", "Alpaca not configured")
 else:
@@ -341,7 +342,7 @@ else:
 # ══════════════════════════════════════════════════════════════════════════════
 # CHECK 4 — Portfolio above daily loss limit
 # ══════════════════════════════════════════════════════════════════════════════
-print(f"\n{BOLD}[4/22] Portfolio & Daily Loss Limit{RESET}")
+print(f"\n{BOLD}[4/23] Portfolio & Daily Loss Limit{RESET}")
 if not alpaca_ok:
     report.add("Daily Loss Limit", "WARN", "Alpaca not configured")
 else:
@@ -373,7 +374,7 @@ else:
 # ══════════════════════════════════════════════════════════════════════════════
 # CHECK 5 — GitHub Actions ran today (predictions written today)
 # ══════════════════════════════════════════════════════════════════════════════
-print(f"\n{BOLD}[5/22] GitHub Actions / Daily Scan{RESET}")
+print(f"\n{BOLD}[5/23] GitHub Actions / Daily Scan{RESET}")
 if not db_ok:
     report.add("Daily Scan (ARGUS)", "WARN", "Supabase not configured — cannot verify")
 else:
@@ -407,7 +408,7 @@ else:
 # ══════════════════════════════════════════════════════════════════════════════
 # CHECK 6 — ORACLE ran and saved learnings this week
 # ══════════════════════════════════════════════════════════════════════════════
-print(f"\n{BOLD}[6/22] ORACLE Learnings{RESET}")
+print(f"\n{BOLD}[6/23] ORACLE Learnings{RESET}")
 if not db_ok:
     report.add("ORACLE Learnings", "WARN", "Supabase not configured — cannot verify")
 else:
@@ -446,7 +447,7 @@ else:
 # ══════════════════════════════════════════════════════════════════════════════
 # CHECK 7 — No positions >20% underwater without a stop loss
 # ══════════════════════════════════════════════════════════════════════════════
-print(f"\n{BOLD}[7/22] Deep Underwater Positions{RESET}")
+print(f"\n{BOLD}[7/23] Deep Underwater Positions{RESET}")
 if not alpaca_ok:
     report.add("Deep Underwater Check", "WARN", "Alpaca not configured")
 elif not alpaca_positions:
@@ -489,7 +490,7 @@ else:
 # ══════════════════════════════════════════════════════════════════════════════
 # CHECK 8 — Trailing stops active on positions up >3%
 # ══════════════════════════════════════════════════════════════════════════════
-print(f"\n{BOLD}[8/22] Trailing Stop Coverage{RESET}")
+print(f"\n{BOLD}[8/23] Trailing Stop Coverage{RESET}")
 if not alpaca_ok:
     report.add("Trailing Stop Coverage", "WARN", "Alpaca not configured")
 elif not alpaca_positions:
@@ -523,7 +524,7 @@ else:
 # ══════════════════════════════════════════════════════════════════════════════
 # CHECK 9 — Buying power is not near zero
 # ══════════════════════════════════════════════════════════════════════════════
-print(f"\n{BOLD}[9/22] Buying Power{RESET}")
+print(f"\n{BOLD}[9/23] Buying Power{RESET}")
 if not alpaca_ok:
     report.add("Buying Power", "WARN", "Alpaca not configured")
 else:
@@ -549,7 +550,7 @@ else:
 # ══════════════════════════════════════════════════════════════════════════════
 # CHECK 10 — XGBoost model exists and is fresh
 # ══════════════════════════════════════════════════════════════════════════════
-print(f"\n{BOLD}[10/22] XGBoost Model Freshness{RESET}")
+print(f"\n{BOLD}[10/23] XGBoost Model Freshness{RESET}")
 try:
     from config import MODEL_PATH, FEATURE_NAMES_PATH
 
@@ -596,7 +597,7 @@ except Exception as e:
 # A silent `pass` in get_partial_exit_history() returned {} on DB failure,
 # making AEGIS think T1/T2 had never fired → double partial exits on live money.
 # ══════════════════════════════════════════════════════════════════════════════
-print(f"\n{BOLD}[11/22] Partial Exit DB Accessibility{RESET}")
+print(f"\n{BOLD}[11/23] Partial Exit DB Accessibility{RESET}")
 if not db_ok:
     report.add("Partial Exit DB", "WARN", "Supabase not configured — cannot verify")
 else:
@@ -622,7 +623,7 @@ else:
 # Bug found 2026-05-29: both daily_scan.yml and oracle.yml had '0 2 * * 2-6'
 # cron → ORACLE ran twice nightly, doubled Supabase writes + API spend.
 # ══════════════════════════════════════════════════════════════════════════════
-print(f"\n{BOLD}[12/22] ORACLE Double-Run Guard{RESET}")
+print(f"\n{BOLD}[12/23] ORACLE Double-Run Guard{RESET}")
 try:
     import re
     scan_yml = ".github/workflows/daily_scan.yml"
@@ -659,7 +660,7 @@ except Exception as e:
 # Bug found 2026-05-29: trail_stops.yml + eod.yml could run simultaneously
 # at 3:45/3:50/4:00 PM ET → concurrent partial exits before DB records land.
 # ══════════════════════════════════════════════════════════════════════════════
-print(f"\n{BOLD}[13/22] AEGIS Concurrency Guard{RESET}")
+print(f"\n{BOLD}[13/23] AEGIS Concurrency Guard{RESET}")
 try:
     missing_concurrency = []
     for yml in [".github/workflows/trail_stops.yml", ".github/workflows/eod.yml"]:
@@ -686,7 +687,7 @@ except Exception as e:
 # Bug found 2026-05-29: defaulted True → iron butterfly orders submitted
 # on any deployment without explicit ENABLE_OPTIONS=false env var.
 # ══════════════════════════════════════════════════════════════════════════════
-print(f"\n{BOLD}[14/22] Options Safety Gate{RESET}")
+print(f"\n{BOLD}[14/23] Options Safety Gate{RESET}")
 try:
     from config import ENABLE_OPTIONS
     if ENABLE_OPTIONS:
@@ -705,7 +706,7 @@ except Exception as e:
 # Bug found 2026-05-29: DAY trade retry block used KELLY_LOSS_PCT/MOVE_TARGET_PCT
 # instead of DAY_TRADE_STOP_PCT/DAY_TRADE_TARGET_PCT → swing bracket on DAY trades.
 # ══════════════════════════════════════════════════════════════════════════════
-print(f"\n{BOLD}[15/22] DAY Trade Bracket Parameters{RESET}")
+print(f"\n{BOLD}[15/23] DAY Trade Bracket Parameters{RESET}")
 try:
     from config import (DAY_TRADE_STOP_PCT, DAY_TRADE_TARGET_PCT,
                         KELLY_LOSS_PCT, MOVE_TARGET_PCT)
@@ -733,7 +734,7 @@ except Exception as e:
 # CHECK 16 — Partial exit fractions must sum < 1.0
 # T1 + T2 must always leave a non-zero remaining tranche to ride the trailing stop.
 # ══════════════════════════════════════════════════════════════════════════════
-print(f"\n{BOLD}[16/22] Partial Exit Fractions{RESET}")
+print(f"\n{BOLD}[16/23] Partial Exit Fractions{RESET}")
 try:
     from config import (PARTIAL_EXIT_TIER1_FRACTION, PARTIAL_EXIT_TIER2_FRACTION,
                         PARTIAL_EXIT_TIER1_TRIGGER, PARTIAL_EXIT_TIER2_TRIGGER,
@@ -763,7 +764,7 @@ except Exception as e:
 # ══════════════════════════════════════════════════════════════════════════════
 # CHECK 17 — Dashboard API is reachable and returns valid JSON
 # ══════════════════════════════════════════════════════════════════════════════
-print(f"\n{BOLD}[17/22] Dashboard API Health{RESET}")
+print(f"\n{BOLD}[17/23] Dashboard API Health{RESET}")
 try:
     import urllib.request, json as _json
     _dashboard_url = "https://illuminati-dashboard.pages.dev/api/dashboard"
@@ -792,7 +793,7 @@ except Exception as e:
 # Bug found 2026-05-29: both illuminati launchd jobs had exit code 126
 # (not executable) — AEGIS and scan backup layers were silently not running.
 # ══════════════════════════════════════════════════════════════════════════════
-print(f"\n{BOLD}[18/22] Mac launchd Job Health{RESET}")
+print(f"\n{BOLD}[18/23] Mac launchd Job Health{RESET}")
 try:
     import subprocess, platform
     if platform.system() != "Darwin":
@@ -834,7 +835,7 @@ except Exception as e:
 # Added 2026-06-01 after HOOD (-$539) and WOLF (-$554) were bought Fri 2:09 PM
 # and gapped through their stops over the weekend. Verify the guard is on.
 # ══════════════════════════════════════════════════════════════════════════════
-print(f"\n{BOLD}[19/22] Weekend-Gap Protection{RESET}")
+print(f"\n{BOLD}[19/23] Weekend-Gap Protection{RESET}")
 try:
     from config import BLOCK_FRIDAY_PM_ENTRIES, FRIDAY_ENTRY_CUTOFF_ET
     if BLOCK_FRIDAY_PM_ENTRIES:
@@ -857,7 +858,7 @@ except Exception as e:
 # Added 2026-06-01 after ON was bought 5x in a week (averaging up into a decline).
 # Verify the anti-accumulation cap is configured sanely.
 # ══════════════════════════════════════════════════════════════════════════════
-print(f"\n{BOLD}[20/22] Entry Cap Per Ticker{RESET}")
+print(f"\n{BOLD}[20/23] Entry Cap Per Ticker{RESET}")
 try:
     from config import MAX_ENTRIES_PER_TICKER, ENTRY_CAP_WINDOW_DAYS
     if MAX_ENTRIES_PER_TICKER >= 1 and ENTRY_CAP_WINDOW_DAYS >= 1:
@@ -883,7 +884,7 @@ except Exception as e:
 #   (B) hard per-trade max loss    — FLY/VOYG/YMAT -16%/-15%/-11% (stop didn't fire)
 #   (C) daily realized-loss halt   — May 27 ran to -$4,776 unchecked
 # ══════════════════════════════════════════════════════════════════════════════
-print(f"\n{BOLD}[21/22] Catastrophic-Day Circuit Breakers{RESET}")
+print(f"\n{BOLD}[21/23] Catastrophic-Day Circuit Breakers{RESET}")
 try:
     from config import (BLOCK_SAME_DAY_REENTRY, HARD_MAX_LOSS_PCT,
                         DAILY_REALIZED_LOSS_HALT_USD, DAILY_REALIZED_LOSS_HALT_PCT,
@@ -919,7 +920,7 @@ except Exception as e:
 # close), sat unfilled overnight, and would have filled at the next open at an
 # uncontrolled gap price. place_order() must refuse entries when market closed.
 # ══════════════════════════════════════════════════════════════════════════════
-print(f"\n{BOLD}[22/22] Market-Hours Order Gate{RESET}")
+print(f"\n{BOLD}[22/23] Market-Hours Order Gate{RESET}")
 try:
     import inspect
     from execution import alpaca as _alp
@@ -935,6 +936,55 @@ try:
                    "placed after close and fill at an uncontrolled open (AMD bug)")
 except Exception as e:
     report.add("Market-Hours Gate", "WARN", str(e)[:80])
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# CHECK 23 — Volatility filter + ATR-based stops
+# Added 2026-06-02 after backtesting 42 real stop-outs: the flat -3% swing stop
+# sat inside one day of normal noise on every name (88% recovered above entry
+# within 7d). Fix = filter ultra-volatile junk (ATR%>10%) + ATR-sized stops on
+# the rest (backtest -181% -> +35%, win 21% -> 60%). This check makes sure those
+# guards stay ON and sane so the system can't silently revert to noise-stopouts.
+# ══════════════════════════════════════════════════════════════════════════════
+print(f"\n{BOLD}[23/23] Volatility Filter & ATR Stops{RESET}")
+try:
+    from config import (ENABLE_VOLATILITY_FILTER, MAX_ENTRY_ATR_PCT,
+                        ENABLE_ATR_STOPS, ATR_STOP_MULT,
+                        ATR_STOP_FLOOR_PCT, ATR_STOP_CAP_PCT)
+    issues = []
+    if not ENABLE_VOLATILITY_FILTER:
+        issues.append("volatility filter OFF — junk micro-caps (the -30% days) can trade")
+    if not (0.05 <= MAX_ENTRY_ATR_PCT <= 0.20):
+        issues.append(f"MAX_ENTRY_ATR_PCT {MAX_ENTRY_ATR_PCT:.0%} out of sane range (5-20%)")
+    if not ENABLE_ATR_STOPS:
+        issues.append("ATR stops OFF — back to flat -3% noise-stopouts")
+    if not (1.0 <= ATR_STOP_MULT <= 3.0):
+        issues.append(f"ATR_STOP_MULT {ATR_STOP_MULT} outside swing range (1.5-2.5x typical)")
+    # floor must be tighter than cap, both sane
+    if ATR_STOP_FLOOR_PCT >= ATR_STOP_CAP_PCT:
+        issues.append(f"ATR floor ({ATR_STOP_FLOOR_PCT:.0%}) >= cap ({ATR_STOP_CAP_PCT:.0%})")
+    if ATR_STOP_CAP_PCT > 0.15:
+        issues.append(f"ATR_STOP_CAP_PCT {ATR_STOP_CAP_PCT:.0%} too wide (junk rides it down)")
+    # also confirm the filter is actually wired into the live execution path
+    import inspect
+    import agent as _agent
+    _asrc = inspect.getsource(_agent)
+    wired = "ENABLE_VOLATILITY_FILTER" in _asrc and "atr_pct" in _asrc
+    if not wired:
+        issues.append("filter/atr_pct NOT wired into agent.py execution loop")
+    if issues:
+        report.add("Volatility Filter & ATR Stops", "FAIL", "; ".join(issues))
+    else:
+        report.add("Volatility Filter & ATR Stops", "PASS",
+                   f"filter ON (ATR>{MAX_ENTRY_ATR_PCT*100:.0f}% skipped) · "
+                   f"ATR stops {ATR_STOP_MULT}x clamped "
+                   f"{ATR_STOP_FLOOR_PCT*100:.0f}-{ATR_STOP_CAP_PCT*100:.0f}% · "
+                   f"constant-$-risk sizing")
+except ImportError as ie:
+    report.add("Volatility Filter & ATR Stops", "FAIL",
+               f"volatility/ATR config missing: {str(ie)[:80]}")
+except Exception as e:
+    report.add("Volatility Filter & ATR Stops", "WARN", str(e)[:80])
 
 
 # ══════════════════════════════════════════════════════════════════════════════

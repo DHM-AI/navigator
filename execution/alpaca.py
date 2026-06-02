@@ -26,7 +26,41 @@ from config import (BANKROLL, ALPACA_API_KEY, ALPACA_SECRET_KEY,
                     ALPACA_BASE_URL, ALPACA_LIVE_MODE,
                     MAX_POSITION_PCT, DAILY_LOSS_LIMIT_PCT,
                     KELLY_LOSS_PCT, MOVE_TARGET_PCT,
-                    DAY_TRADE_STOP_PCT, DAY_TRADE_TARGET_PCT)
+                    DAY_TRADE_STOP_PCT, DAY_TRADE_TARGET_PCT,
+                    ENABLE_ATR_STOPS, ATR_STOP_MULT,
+                    ATR_STOP_FLOOR_PCT, ATR_STOP_CAP_PCT)
+
+
+def _resolve_stop_and_size(dollar_amount: float, atr_pct: float,
+                           is_day_trade: bool, ticker: str = "") -> tuple:
+    """Return (stop_pct, effective_notional) for a bracket entry.
+
+    Swing trades use a volatility-adjusted stop = ATR_STOP_MULT x ATR%, clamped
+    to [ATR_STOP_FLOOR_PCT, ATR_STOP_CAP_PCT]. Position notional is then rescaled
+    so the DOLLAR risk per trade stays constant regardless of stop width:
+    risk budget = dollar_amount x floor%  (the original 3% risk), and
+    effective_notional = risk_budget / stop_pct. So a wider (more volatile) stop
+    -> smaller position, same $ at risk. Floor stop -> notional unchanged.
+
+    DAY trades and the disabled/zero-ATR path keep the legacy fixed stop and the
+    full notional (no rescale) — identical to prior behavior.
+    """
+    if is_day_trade:
+        return DAY_TRADE_STOP_PCT, dollar_amount
+    if not ENABLE_ATR_STOPS or not atr_pct or atr_pct <= 0:
+        return KELLY_LOSS_PCT, dollar_amount
+    raw = ATR_STOP_MULT * float(atr_pct)
+    stop_pct = max(ATR_STOP_FLOOR_PCT, min(raw, ATR_STOP_CAP_PCT))
+    # Keep $ risk constant vs the floor (legacy 3%) baseline.
+    risk_budget = dollar_amount * ATR_STOP_FLOOR_PCT
+    effective_notional = risk_budget / stop_pct if stop_pct > 0 else dollar_amount
+    # Never upsize beyond the requested dollar amount (only hold or shrink).
+    effective_notional = min(effective_notional, dollar_amount)
+    if abs(effective_notional - dollar_amount) > 1:
+        print(f"[APEX] {ticker}: ATR stop {stop_pct*100:.1f}% "
+              f"(ATR {atr_pct*100:.1f}% x{ATR_STOP_MULT}) -> notional "
+              f"${dollar_amount:.0f} -> ${effective_notional:.0f} (constant $ risk)")
+    return stop_pct, effective_notional
 
 
 def _get_client():
@@ -185,7 +219,7 @@ def _check_daily_loss_limit() -> bool:
 
 def place_order(ticker: str, dollar_amount: float, direction: str,
                 reason: str = "", execution_path: str = "",
-                duration: str = "") -> dict:
+                duration: str = "", atr_pct: float = 0.0) -> dict:
     """
     Place a BRACKET ORDER: entry + stop loss + take profit in one shot.
 
@@ -296,11 +330,11 @@ def place_order(ticker: str, dollar_amount: float, direction: str,
         print(f"[APEX] Could not get price for {ticker} — skipping (no unprotected order placed)")
         return {"status": "skipped", "reason": f"Could not fetch price for {ticker}"}
 
-    qty = max(1, round(dollar_amount / price))
-
     # Stop loss and take profit prices — DAY trades use tighter bracket
-    _sl_pct = DAY_TRADE_STOP_PCT   if _is_day_trade else KELLY_LOSS_PCT
     _tp_pct = DAY_TRADE_TARGET_PCT if _is_day_trade else MOVE_TARGET_PCT
+    _sl_pct, _effective_notional = _resolve_stop_and_size(
+        dollar_amount, atr_pct, _is_day_trade, ticker)
+    qty = max(1, round(_effective_notional / price))
     if side == "buy":
         stop_price  = round(price * (1 - _sl_pct), 2)
         limit_price = round(price * (1 + _tp_pct), 2)
@@ -373,7 +407,7 @@ def place_order(ticker: str, dollar_amount: float, direction: str,
                     else:
                         stop_price  = round(actual_price * (1 + _sl_pct), 2)
                         limit_price = round(actual_price * (1 - _tp_pct), 2)
-                    qty = max(1, round(dollar_amount / actual_price))
+                    qty = max(1, round(_effective_notional / actual_price))
                     print(f"[APEX] Retrying bracket with corrected price ${actual_price:.2f} "
                           f"→ SL ${stop_price:.2f} / TP ${limit_price:.2f}")
                     from alpaca.trading.client import TradingClient
