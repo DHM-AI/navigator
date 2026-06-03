@@ -1,0 +1,10 @@
+# Single source of truth is requirements-agent.txt — this file just includes it.
+#
+# Why this file exists (restored 2026-06-03): every workflow's `setup-python`
+# step uses `cache: pip`, which by DEFAULT hashes **/requirements.txt to build
+# the pip cache key. Deleting this file on 2026-06-02 (it was the old
+# Streamlit-Cloud dependency list) made setup-python hard-fail with
+# "No file matched to **/requirements.txt" across all 12 Python workflows —
+# before the agent code ever ran. Keeping a requirements.txt restores the cache
+# key. It points at the agent list so there's no second dependency list to drift.
+-r requirements-agent.txt
