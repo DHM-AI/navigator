@@ -414,13 +414,31 @@ def trail_positions(
                     # left at original qty, so when remaining tranche hits TP
                     # it tries to sell MORE shares than held → Alpaca rejects
                     # → uncovered position.
+                    # ── Part B fix (2026-06-03): cancel using a LIVE order fetch,
+                    # not the stale `ticker_orders` snapshot. The snapshot could
+                    # miss an order placed by a prior run or a HELD leg, so the
+                    # cancel silently skipped it; that order kept "holding" the
+                    # full qty and every replacement then failed with
+                    # held_for_orders (40310000) → naked/un-trailed remainder
+                    # (the INTC incident). Re-fetch live, cancel ALL active
+                    # stop/TP legs, then VERIFY they actually cleared before we
+                    # place replacements — only then is the held qty truly freed.
                     _stop_snapshots = []
                     _tp_snapshots   = []
-                    for o in ticker_orders:
-                        otype = str(getattr(o, "type", "")).lower()
-                        if not is_active_order(o):
-                            continue
-                        if "stop" in otype:
+                    _cancelled_ids  = []
+                    try:
+                        from alpaca.trading.requests import GetOrdersRequest as _GOR
+                        from alpaca.trading.enums import QueryOrderStatus as _QOS
+                        _live_orders = [o for o in client.get_orders(
+                            _GOR(status=_QOS.ALL, limit=200))
+                            if o.symbol == ticker and is_active_order(o)]
+                    except Exception as _lf_err:
+                        print(f"[AEGIS] {ticker} {tier_name}: live order re-fetch failed "
+                              f"({str(_lf_err)[:60]}) — falling back to snapshot list")
+                        _live_orders = [o for o in ticker_orders if is_active_order(o)]
+                    for o in _live_orders:
+                        otype = str(getattr(o, "type", "") or getattr(o, "order_type", "")).lower()
+                        if "stop" in otype or "trail" in otype:
                             _stop_snapshots.append({
                                 "type":  otype,
                                 "qty":   float(o.qty) if o.qty else _abs_qty,
@@ -429,20 +447,43 @@ def trail_positions(
                                 "trail_percent": float(getattr(o, "trail_percent", 0) or 0),
                             })
                             try:
-                                client.cancel_order_by_id(str(o.id))
+                                client.cancel_order_by_id(str(o.id)); _cancelled_ids.append(str(o.id))
                             except Exception:
                                 pass
-                        elif otype == "limit" and getattr(o, "parent_order_id", None):
-                            # Bracket TP leg — also needs resize after partial
+                        elif otype == "limit":
+                            # Any active limit on this symbol is a TP leg (bracket
+                            # child OR a standalone TP from a prior reissue) — it
+                            # also holds qty, so cancel + resize after the partial.
                             _tp_snapshots.append({
                                 "qty":         float(o.qty) if o.qty else _abs_qty,
                                 "side":        o.side,
                                 "limit_price": float(o.limit_price) if o.limit_price else None,
                             })
                             try:
-                                client.cancel_order_by_id(str(o.id))
+                                client.cancel_order_by_id(str(o.id)); _cancelled_ids.append(str(o.id))
                             except Exception:
                                 pass
+                    # VERIFY cancellations cleared (frees held_for_orders qty) before
+                    # we place any replacement. Poll briefly; canceled/expired/filled
+                    # all count as "no longer holding qty".
+                    if _cancelled_ids:
+                        import time as _time
+                        from alpaca.trading.enums import QueryOrderStatus as _QOS2
+                        from alpaca.trading.requests import GetOrdersRequest as _GOR2
+                        for _attempt in range(6):   # ~3s max
+                            try:
+                                _still = {str(o.id) for o in client.get_orders(
+                                    _GOR2(status=_QOS2.ALL, limit=200))
+                                    if o.symbol == ticker and is_active_order(o)
+                                    and str(o.id) in _cancelled_ids}
+                            except Exception:
+                                _still = set()
+                            if not _still:
+                                break
+                            _time.sleep(0.5)
+                        else:
+                            print(f"[AEGIS] {ticker} {tier_name}: ⚠ {len(_still)} order(s) "
+                                  f"still active after cancel poll — replacements may conflict")
 
                     # Market-close the tier qty — if it fails, RESTORE the stop
                     mreq = MarketOrderRequest(
@@ -496,80 +537,57 @@ def trail_positions(
                         print(f"[AEGIS] {ticker} {tier_name} sell failed: {_sell_err} — restored stops+TP")
                         raise
 
-                    # T1 moves remaining stop to breakeven
-                    # T2 leaves stop at breakeven (already there from T1)
-                    # CRITICAL: after a successful partial sell, we MUST place a stop.
-                    # If the ideal stop (breakeven) fails, fall back to any stop below
-                    # current price — naked is never acceptable after a sell.
+                    # ── Protect the remainder (Part B fix, 2026-06-03) ──────────
+                    # After a partial sell, the remainder "rides the trailing stop"
+                    # (the system's stated design). Place ONE trailing stop — NOT a
+                    # fixed stop PLUS a separate TP. The old approach placed both on
+                    # the same shares, but each is a reduce-only order that "holds"
+                    # the full qty, so Alpaca rejected the second with held_for_orders
+                    # (40310000) — the tranche ended up with a stop but a FAILED TP
+                    # (and, under concurrent runs, sometimes naked). A single
+                    # trailing stop has no sibling to conflict with, captures upside
+                    # without a separate TP, and is exactly what the remainder should
+                    # do. Fall back to a fixed stop if the trailing can't place —
+                    # never naked. (No standalone TP reissue: it can't coexist with
+                    # the stop on the same shares without an OCO bracket.)
                     if remain_qty > 0 and _entry_px > 0:
                         be_side = OrderSide.SELL if is_long else OrderSide.BUY
-                        # Try ideal stop (breakeven if move_to_be, else use current-3%)
-                        _stop_px = round(_entry_px, 2) if move_to_be else round(
-                            (_current_px * 0.97 if is_long else _current_px * 1.03), 2)
-                        _stop_placed = False
-                        for _tif in [TimeInForce.GTC, TimeInForce.DAY]:
-                            try:
-                                client.submit_order(StopOrderRequest(
-                                    symbol=ticker, qty=remain_qty, side=be_side,
-                                    stop_price=_stop_px, time_in_force=_tif))
-                                _stop_placed = True
-                                break
-                            except Exception:
-                                pass
-                        if not _stop_placed:
-                            # Last-resort: place stop 3% below/above current — anything > naked
-                            _fallback_px = round((_current_px * 0.97 if is_long else _current_px * 1.03), 2)
-                            try:
-                                client.submit_order(StopOrderRequest(
-                                    symbol=ticker, qty=remain_qty, side=be_side,
-                                    stop_price=_fallback_px, time_in_force=TimeInForce.DAY))
-                                _stop_placed = True
-                                print(f"[AEGIS] {ticker} {tier_name}: breakeven stop failed — placed fallback stop @ ${_fallback_px:.2f}")
-                            except Exception as _se:
-                                print(f"[AEGIS] {ticker} {tier_name}: ALL stop placements failed: {_se}")
-                        if not _stop_placed:
+                        _trail_remain = round(_target_trail(pct_gain_decimal) * 100, 2)
+                        _protected = False
+                        try:
+                            client.submit_order(TrailingStopOrderRequest(
+                                symbol=ticker, qty=remain_qty, side=be_side,
+                                time_in_force=TimeInForce.GTC,
+                                trail_percent=_trail_remain))
+                            _protected = True
+                            print(f"[AEGIS] {ticker} {tier_name}: remainder {remain_qty} → trailing stop {_trail_remain}%")
+                        except Exception as _tse:
+                            print(f"[AEGIS] {ticker} {tier_name}: trailing failed ({str(_tse)[:60]}) — fixed-stop fallback")
+                        if not _protected:
+                            # Fallback: fixed stop (breakeven if move_to_be, else current ∓3%)
+                            _stop_px = round(_entry_px, 2) if move_to_be else round(
+                                (_current_px * 0.97 if is_long else _current_px * 1.03), 2)
+                            for _tif in [TimeInForce.GTC, TimeInForce.DAY]:
+                                try:
+                                    client.submit_order(StopOrderRequest(
+                                        symbol=ticker, qty=remain_qty, side=be_side,
+                                        stop_price=_stop_px, time_in_force=_tif))
+                                    _protected = True
+                                    print(f"[AEGIS] {ticker} {tier_name}: fallback fixed stop @ ${_stop_px:.2f}")
+                                    break
+                                except Exception:
+                                    pass
+                        if not _protected:
                             # Genuinely naked after partial sell — fire Slack alert
                             try:
                                 from alerts.slack import _post
                                 _post({"text": (
                                     f"🚨 *NAKED after partial exit — {ticker}*\n"
-                                    f">Sold {close_qty} shares but FAILED to place replacement stop\n"
-                                    f">Remaining: {remain_qty} shares · *Manual stop required NOW*"
+                                    f">Sold {close_qty} shares but FAILED to place ANY stop on "
+                                    f"{remain_qty} remaining · *Manual stop required NOW*"
                                 )})
                             except Exception:
                                 pass
-
-                    # CRITICAL audit C-7: reissue bracket TP sized to remain_qty.
-                    # Was leaving orphan TP at original qty → would over-sell on
-                    # exit and Alpaca would reject → no TP coverage on the tranche.
-                    # R-2 fix: reissue TP sized to remain_qty. If broker had a
-                    # bracket TP, reuse its limit price. If not (position came
-                    # from _place_simple_order / naked rescue / sentiment_guard
-                    # replacement / crypto), synthesize one at MOVE_TARGET_PCT
-                    # from entry — otherwise the tranche has NO upside exit at all.
-                    if remain_qty > 0:
-                        try:
-                            from alpaca.trading.requests import LimitOrderRequest as _LOR
-                            from config import MOVE_TARGET_PCT as _MTP
-                            if _tp_snapshots:
-                                _tp0 = _tp_snapshots[0]
-                                _tp_side, _tp_px = _tp0["side"], _tp0["limit_price"]
-                                _src = "broker"
-                            else:
-                                _tp_side = OrderSide.SELL if is_long else OrderSide.BUY
-                                _tp_px = (round(_entry_px * (1 + _MTP), 2)
-                                          if is_long else
-                                          round(_entry_px * (1 - _MTP), 2))
-                                _src = "synthesized"
-                            _tp_req = _LOR(
-                                symbol=ticker, qty=remain_qty, side=_tp_side,
-                                limit_price=_tp_px,
-                                time_in_force=TimeInForce.GTC,
-                            )
-                            client.submit_order(_tp_req)
-                            print(f"[AEGIS] {ticker} TP ({_src}) sized to {remain_qty} @ ${_tp_px:.2f}")
-                        except Exception as _tpe:
-                            print(f"[AEGIS] {ticker} could not reissue TP at remain_qty: {_tpe}")
 
                     # Log to Supabase — status encodes which tier fired.
                     # CRITICAL: if this write fails and is not retried, the next
