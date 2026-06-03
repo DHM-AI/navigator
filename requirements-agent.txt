@@ -4,8 +4,7 @@
 #
 # Dashboard uses the slim requirements.txt instead.
 
-# Dashboard deps (kept in sync)
-streamlit>=1.35
+# (Streamlit removed 2026-06-02 — dashboard is Cloudflare Pages now)
 pandas>=2.2
 numpy>=1.26
 plotly>=5.20

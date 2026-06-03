@@ -50,25 +50,13 @@ def _using_service_key() -> bool:
     return bool(os.environ.get("SUPABASE_SERVICE_KEY", ""))
 
 
-# Streamlit-cached version (avoids reconnecting on every rerender)
-try:
-    import streamlit as st
-
-    @st.cache_resource
-    def get_cached_client() -> Client:
-        return get_client()
-
-except ImportError:
-    get_cached_client = get_client  # type: ignore
+# Streamlit was decommissioned 2026-06-02 (dashboard is Cloudflare Pages now).
+# Kept get_cached_client as an alias for backward compatibility with any caller.
+get_cached_client = get_client
 
 
 def _client() -> Client:
-    """Use cached client when running inside Streamlit, plain client elsewhere."""
-    try:
-        import streamlit as st
-        return get_cached_client()
-    except Exception:
-        return get_client()
+    return get_client()
 
 
 # ── Predictions ───────────────────────────────────────────────────────────────

@@ -30,8 +30,6 @@ jobs:
       ALPACA_BASE_URL:   ${{ secrets.ALPACA_BASE_URL }}
       ALPACA_LIVE_MODE:  ${{ secrets.ALPACA_LIVE_MODE }}
       SLACK_WEBHOOK_URL: ${{ secrets.SLACK_WEBHOOK_URL }}
-      PUSHOVER_USER_KEY: ${{ secrets.PUSHOVER_USER_KEY }}
-      PUSHOVER_APP_TOKEN: ${{ secrets.PUSHOVER_APP_TOKEN }}
       BANKROLL:          ${{ secrets.BANKROLL }}
       SUPABASE_URL:      ${{ secrets.SUPABASE_URL }}
       SUPABASE_KEY:      ${{ secrets.SUPABASE_KEY }}

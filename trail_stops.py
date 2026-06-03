@@ -98,18 +98,6 @@ else:
 
     if partial_exits:
         print(f"\n✂️  {len(partial_exits)} partial exit(s) fired:")
-        # Fire Pushover lock-screen alerts for each (no-op if PUSHOVER_* unset)
-        try:
-            from alerts.pushover import send_partial_exit, send_big_winner
-            for r in partial_exits:
-                tier = 2 if r.get("pct_gain", 0) >= 12 else 1
-                send_partial_exit(r["ticker"], tier, r["pnl_locked"])
-                # Also fire big-winner if gain ≥ threshold (default 10%)
-                if r.get("pct_gain", 0) >= 10:
-                    send_big_winner(r["ticker"], r["pnl_locked"], r["pct_gain"])
-        except Exception as e:
-            print(f"[trail_stops] pushover dispatch failed: {e}")
-
         for r in partial_exits:
             print(f"  ✂️  {r['ticker']:6s}  +{r['pct_gain']:.1f}%  →  "
                   f"closed {r['qty_closed']} shares  "

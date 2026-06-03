@@ -223,12 +223,6 @@ def send_trade_alert(result: dict) -> bool:
     reason = result.get("reason", "")
 
     if status == "halted":
-        # Mirror to Pushover lock-screen (no-op if PUSHOVER_* secrets unset)
-        try:
-            from alerts.pushover import send_halt
-            send_halt(result.get("reason", "Daily loss limit hit"))
-        except Exception:
-            pass
         return _post({"text": f"🛑 *Trading HALTED — daily loss limit hit*\n>{result.get('reason','')}"})
 
     if status == "error":
