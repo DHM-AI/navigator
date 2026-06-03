@@ -414,13 +414,31 @@ def trail_positions(
                     # left at original qty, so when remaining tranche hits TP
                     # it tries to sell MORE shares than held → Alpaca rejects
                     # → uncovered position.
+                    # ── Part B fix (2026-06-03): cancel using a LIVE order fetch,
+                    # not the stale `ticker_orders` snapshot. The snapshot could
+                    # miss an order placed by a prior run or a HELD leg, so the
+                    # cancel silently skipped it; that order kept "holding" the
+                    # full qty and every replacement then failed with
+                    # held_for_orders (40310000) → naked/un-trailed remainder
+                    # (the INTC incident). Re-fetch live, cancel ALL active
+                    # stop/TP legs, then VERIFY they actually cleared before we
+                    # place replacements — only then is the held qty truly freed.
                     _stop_snapshots = []
                     _tp_snapshots   = []
-                    for o in ticker_orders:
-                        otype = str(getattr(o, "type", "")).lower()
-                        if not is_active_order(o):
-                            continue
-                        if "stop" in otype:
+                    _cancelled_ids  = []
+                    try:
+                        from alpaca.trading.requests import GetOrdersRequest as _GOR
+                        from alpaca.trading.enums import QueryOrderStatus as _QOS
+                        _live_orders = [o for o in client.get_orders(
+                            _GOR(status=_QOS.ALL, limit=200))
+                            if o.symbol == ticker and is_active_order(o)]
+                    except Exception as _lf_err:
+                        print(f"[AEGIS] {ticker} {tier_name}: live order re-fetch failed "
+                              f"({str(_lf_err)[:60]}) — falling back to snapshot list")
+                        _live_orders = [o for o in ticker_orders if is_active_order(o)]
+                    for o in _live_orders:
+                        otype = str(getattr(o, "type", "") or getattr(o, "order_type", "")).lower()
+                        if "stop" in otype or "trail" in otype:
                             _stop_snapshots.append({
                                 "type":  otype,
                                 "qty":   float(o.qty) if o.qty else _abs_qty,
@@ -429,20 +447,43 @@ def trail_positions(
                                 "trail_percent": float(getattr(o, "trail_percent", 0) or 0),
                             })
                             try:
-                                client.cancel_order_by_id(str(o.id))
+                                client.cancel_order_by_id(str(o.id)); _cancelled_ids.append(str(o.id))
                             except Exception:
                                 pass
-                        elif otype == "limit" and getattr(o, "parent_order_id", None):
-                            # Bracket TP leg — also needs resize after partial
+                        elif otype == "limit":
+                            # Any active limit on this symbol is a TP leg (bracket
+                            # child OR a standalone TP from a prior reissue) — it
+                            # also holds qty, so cancel + resize after the partial.
                             _tp_snapshots.append({
                                 "qty":         float(o.qty) if o.qty else _abs_qty,
                                 "side":        o.side,
                                 "limit_price": float(o.limit_price) if o.limit_price else None,
                             })
                             try:
-                                client.cancel_order_by_id(str(o.id))
+                                client.cancel_order_by_id(str(o.id)); _cancelled_ids.append(str(o.id))
                             except Exception:
                                 pass
+                    # VERIFY cancellations cleared (frees held_for_orders qty) before
+                    # we place any replacement. Poll briefly; canceled/expired/filled
+                    # all count as "no longer holding qty".
+                    if _cancelled_ids:
+                        import time as _time
+                        from alpaca.trading.enums import QueryOrderStatus as _QOS2
+                        from alpaca.trading.requests import GetOrdersRequest as _GOR2
+                        for _attempt in range(6):   # ~3s max
+                            try:
+                                _still = {str(o.id) for o in client.get_orders(
+                                    _GOR2(status=_QOS2.ALL, limit=200))
+                                    if o.symbol == ticker and is_active_order(o)
+                                    and str(o.id) in _cancelled_ids}
+                            except Exception:
+                                _still = set()
+                            if not _still:
+                                break
+                            _time.sleep(0.5)
+                        else:
+                            print(f"[AEGIS] {ticker} {tier_name}: ⚠ {len(_still)} order(s) "
+                                  f"still active after cancel poll — replacements may conflict")
 
                     # Market-close the tier qty — if it fails, RESTORE the stop
                     mreq = MarketOrderRequest(
