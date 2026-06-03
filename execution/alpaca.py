@@ -99,6 +99,28 @@ def get_account() -> dict:
     }
 
 
+def get_bankroll() -> float:
+    """Dynamic bankroll = the REAL account equity at the prior market close
+    (Alpaca `last_equity`). Renato 2026-06-03: bankroll must track the live
+    account, not a fixed/imaginary number that drifts out of reality.
+
+    Why last_equity (not current equity): it updates ONCE per day at the close
+    and stays fixed intraday, so position sizing is stable through the session
+    and "upgrades" each day by however much the account grew — instead of
+    swinging with intraday mark-to-market. Falls back to the static config
+    BANKROLL (env/secret) only if the account can't be read.
+    """
+    try:
+        a = get_account()
+        val = float(a.get("last_equity") or a.get("equity") or a.get("portfolio_value") or 0)
+        if val > 0:
+            return round(val, 2)
+    except Exception as e:
+        print(f"[THEMIS] get_bankroll: live equity unavailable ({str(e)[:60]}) "
+              f"— falling back to config BANKROLL ${BANKROLL:,.0f}")
+    return float(BANKROLL)
+
+
 # ── Active order statuses (CRITICAL: covers all SDK string formats) ──────
 # The Alpaca Python SDK can stringify an OrderStatus enum two ways:
 #   "OrderStatus.HELD"  or  "held"
@@ -280,8 +302,9 @@ def place_order(ticker: str, dollar_amount: float, direction: str,
     if not _check_daily_loss_limit():
         return {"status": "halted", "reason": "Daily loss limit breached (5%). No new trades today."}
 
-    # Cap position size
-    max_allowed = BANKROLL * MAX_POSITION_PCT
+    # Cap position size — uses the LIVE account bankroll (last_equity), not a
+    # static number, so the cap tracks the real account (Renato 2026-06-03).
+    max_allowed = get_bankroll() * MAX_POSITION_PCT
     if dollar_amount > max_allowed:
         dollar_amount = max_allowed
 
@@ -1067,7 +1090,7 @@ def place_crypto_order(alpaca_symbol: str, dollar_amount: float,
                 "reason": "Daily loss limit hit — crypto path also halted"}
 
     # Audit C1: cap position size (was unbounded — equities cap at 8%, crypto didn't).
-    _cap = BANKROLL * MAX_POSITION_PCT
+    _cap = get_bankroll() * MAX_POSITION_PCT   # live account bankroll, not static
     if dollar_amount > _cap:
         print(f"[APEX] CRYPTO {alpaca_symbol}: ${dollar_amount:.0f} capped to "
               f"${_cap:.0f} (MAX_POSITION_PCT {MAX_POSITION_PCT:.0%})")

@@ -546,8 +546,15 @@ def run_scan(send_email: bool = True,
                 print(f"      ⚠ Options enrichment failed ({e}) — continuing without it")
 
     # ── 4. Risk — Kelly Criterion ─────────────────────────────────
-    print(f"\n[THEMIS] RISK — Kelly Criterion sizing (bankroll ${BANKROLL:,.0f})")
-    picks_df = annotate_picks(picks_df)
+    # Bankroll = LIVE account equity at prior close (get_bankroll), not the
+    # static config number — so sizing tracks the real account (Renato 2026-06-03).
+    try:
+        from execution.alpaca import get_bankroll as _get_bankroll
+        _bankroll = _get_bankroll()
+    except Exception:
+        _bankroll = BANKROLL
+    print(f"\n[THEMIS] RISK — Kelly Criterion sizing (bankroll ${_bankroll:,.0f} · live account)")
+    picks_df = annotate_picks(picks_df, bankroll=_bankroll)
     for _, row in picks_df.head(10).iterrows():
         print(f"      {row['ticker']:6s}  score={row['score']:.0f}  "
               f"${row.get('dollar_amount',0):,.0f}  ({row.get('risk_level','')})")

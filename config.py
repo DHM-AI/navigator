@@ -126,13 +126,15 @@ XGB_WEIGHT       = 0.70
 SENTIMENT_WEIGHT = 0.30
 
 # ── Kelly Criterion / position sizing ─────────────────────────────────────────
-# Sizing rebased 2026-06-02 (Option 3) to the REAL account, not the old $50k.
-# Account was ~$153k; sizing off $50k made every position only ~5% of equity.
-# New base: real account. Per-trade 8% × 10 positions = ~80% deployed, 20% cash
-# buffer, diversified. At $153k: ~$12.3k/trade, ~$370 risk/trade @ 3% stop.
-# IMPORTANT: BANKROLL also reads from env/GitHub secret — the `BANKROLL` secret
-# MUST be updated to the live account value or production keeps using the old
-# number. Default here bumped so local runs match.
+# Sizing base = the REAL account. Per-trade 8% × 10 positions = ~80% deployed,
+# 20% cash buffer. At ~$153k that's ~$12.3k/trade, ~$370 risk/trade @ 3% stop.
+#
+# DYNAMIC BANKROLL (2026-06-03): the live bankroll is resolved at sizing time by
+# execution.alpaca.get_bankroll(), which reads the account's `last_equity` (prior
+# market close) — so the bankroll tracks the real account and "upgrades" each day
+# at the close, instead of a fixed/imaginary number drifting out of reality.
+# This BANKROLL constant is now only the FALLBACK used if the live account can't
+# be read (and the `BANKROLL` env/secret can still override the fallback).
 BANKROLL          = float(os.getenv("BANKROLL", "153000"))
 KELLY_WIN_PCT     = 0.10   # expected gain on a win (trailing stops avg ~10% on winners)
 KELLY_LOSS_PCT    = 0.03   # expected loss if wrong (3% stop)

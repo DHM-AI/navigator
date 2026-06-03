@@ -207,15 +207,20 @@ def check_trade(
     try:
         from config import (DAILY_REALIZED_LOSS_HALT_USD,
                             DAILY_REALIZED_LOSS_HALT_PCT, BANKROLL)
-        from execution.alpaca import get_closed_trade_pnl
+        from execution.alpaca import get_closed_trade_pnl, get_bankroll
         _today = datetime.now(timezone.utc).strftime("%Y-%m-%d")
         _realized_today = sum(
             _t.get("realized_pnl", 0)
             for _t in get_closed_trade_pnl(days=1, raise_on_error=True)
             if str(_t.get("closed_at", "")).startswith(_today)
         )
+        # live account bankroll, not static (Renato 2026-06-03)
+        try:
+            _bankroll = get_bankroll()
+        except Exception:
+            _bankroll = BANKROLL
         _floor = -min(DAILY_REALIZED_LOSS_HALT_USD,
-                      BANKROLL * DAILY_REALIZED_LOSS_HALT_PCT)
+                      _bankroll * DAILY_REALIZED_LOSS_HALT_PCT)
         if _realized_today <= _floor:
             return False, (
                 f"Daily loss halt: realized ${_realized_today:+,.0f} today "
