@@ -10,10 +10,17 @@
 --     • db.py (trading agent / GitHub Actions)  -> SUPABASE_SERVICE_KEY
 --     • illuminati-dashboard workers (dashboard.js, alerts.js, alert-*.js)
 --       -> SUPABASE_SERVICE_KEY (server-side only; keys never reach the browser)
---   NOTHING uses the anon key from a client. So we enable RLS with NO policies:
+--   No BROWSER client uses the anon key. So we enable RLS with NO policies:
 --   the anon/public role is denied all access (the security hole), while the
 --   service key continues to read/write normally. No policies are needed because
 --   there is no legitimate anon access to preserve.
+--
+--   CORRECTION (audit 2026-06-02): two NON-production readers DO use the anon key
+--   and will silently return empty reads under RLS unless given the service key:
+--     1. the local .env (dev/manual runs) — add SUPABASE_SERVICE_KEY locally
+--     2. the Streamlit Cloud backup dashboard — set SUPABASE_SERVICE_KEY in its
+--        Streamlit secrets, else its pages show empty (RLS returns [], not error)
+--   Production (GitHub Actions + Cloudflare Pages) is correctly on the service key.
 --
 --   If you ever add a browser client that reads Supabase directly with the anon
 --   key, you'll then add explicit SELECT policies for the `anon` role per table.

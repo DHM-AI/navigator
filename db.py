@@ -257,9 +257,18 @@ def get_partial_exit_history(lookback_days: int = 90,
             .gte("timestamp", cutoff)
             .execute()
         )
+        # Audit M-2 (2026-06-02): compare timestamps as parsed datetimes, not raw
+        # strings. Lexical compare only works if every row is identical-format UTC
+        # ISO; a mixed tz-offset / naive-vs-aware string would mis-order and could
+        # let a stale partial suppress a real T1/T2 scale-out (real-money risk).
+        def _ts_epoch(s) -> float:
+            try:
+                return datetime.fromisoformat(str(s).replace("Z", "+00:00")).timestamp()
+            except Exception:
+                return 0.0
         # Find the most recent "position closed" timestamp per ticker so we
         # only count partials AFTER that point as still-active.
-        last_close: dict[str, str] = {}
+        last_close: dict[str, float] = {}
         try:
             closes = (
                 _client().table("trades")
@@ -270,8 +279,8 @@ def get_partial_exit_history(lookback_days: int = 90,
             )
             for c in (closes.data or []):
                 tk = c["ticker"]
-                ts = c["timestamp"]
-                if ts > last_close.get(tk, ""):
+                ts = _ts_epoch(c["timestamp"])
+                if ts > last_close.get(tk, 0.0):
                     last_close[tk] = ts
         except Exception:
             pass   # if close lookup fails, fall through to old behavior
@@ -283,7 +292,7 @@ def get_partial_exit_history(lookback_days: int = 90,
             if open_tickers is not None and tk not in open_tickers:
                 continue
             # Drop history if a close happened AFTER this partial (different position)
-            if r["timestamp"] < last_close.get(tk, ""):
+            if _ts_epoch(r["timestamp"]) < last_close.get(tk, 0.0):
                 continue
             history.setdefault(tk, {"t1": False, "t2": False, "t1_qty": 0.0})
             # Legacy "partial_exit" entries count as Tier 1 fired

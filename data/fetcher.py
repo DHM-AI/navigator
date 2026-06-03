@@ -310,6 +310,11 @@ def get_earnings_days(ticker: str) -> Optional[int]:
         else:
             return None
         delta = (earnings_dt.date() - datetime.today().date()).days
+        # Audit 2026-06-02: yfinance can return a STALE/past earnings date,
+        # yielding a negative "days until earnings" that earnings-proximity
+        # guards misread as imminent. Only return forward-looking values.
+        if delta < 0:
+            return None
         return delta
     except Exception:
         return None
