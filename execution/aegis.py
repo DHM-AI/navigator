@@ -942,3 +942,115 @@ def trail_positions(
         print(f"[AEGIS] trail_positions error: {e}")
 
     return results
+
+
+def safety_sweep() -> list:
+    """AEGIS BACKSTOP (2026-06-03) — runs AFTER trail_positions(), independent of
+    the partial-exit/trail internals (which have had handoff bugs that left INTC
+    and IMSR un-trailed / briefly naked). Two guarantees, every run:
+
+      1. NO naked position — any position with no active stop gets a protective stop.
+      2. Any position at/above TRAIL_TRIGGER_PCT has a TRAILING stop — upgrades a
+         lingering fixed stop the main pass failed to convert.
+
+    Idempotent: a position already correctly protected (trailing when it should
+    trail, fixed when below the trigger) is skipped — no order churn. Upgrades
+    cancel the old stop, place the trailing, and VERIFY; if the trailing fails
+    (e.g. TP still holds the qty), a protective fixed stop is re-placed so the
+    position is NEVER left naked. If even that fails, it Slack-alerts loudly.
+    """
+    from execution.alpaca import _get_client, get_positions, is_active_order
+    from alpaca.trading.requests import (GetOrdersRequest, TrailingStopOrderRequest,
+                                         StopOrderRequest)
+    from alpaca.trading.enums import QueryOrderStatus, OrderSide, TimeInForce
+    from config import TRAIL_TRIGGER_PCT, TRAIL_PCT, KELLY_LOSS_PCT
+
+    def _ot(o):
+        return str(getattr(o, "order_type", "") or getattr(o, "type", "")).lower()
+
+    actions = []
+    try:
+        client = _get_client()
+        positions = get_positions() or []
+        if not positions:
+            print("[SWEEP] No open positions.")
+            return actions
+
+        stops_by_sym = {}
+        for o in client.get_orders(GetOrdersRequest(status=QueryOrderStatus.ALL, limit=500)):
+            if is_active_order(o) and ("stop" in _ot(o) or "trail" in _ot(o)):
+                stops_by_sym.setdefault(o.symbol, []).append(o)
+
+        trigger_pct = TRAIL_TRIGGER_PCT * 100   # config stores a decimal
+        for p in positions:
+            sym = p["ticker"]
+            qty = abs(float(p.get("qty") or 0))
+            if qty <= 0:
+                continue
+            is_long = "short" not in str(p.get("side", "")).lower()
+            entry = float(p.get("avg_entry_price") or 0)
+            cur   = float(p.get("current_price") or 0)
+            pct   = ((cur - entry) / entry * 100 * (1 if is_long else -1)) if entry else 0.0
+            close_side = OrderSide.SELL if is_long else OrderSide.BUY
+
+            sym_stops    = stops_by_sym.get(sym, [])
+            has_trailing = any("trail" in _ot(o) for o in sym_stops)
+            has_fixed    = any("stop" in _ot(o) and "trail" not in _ot(o) for o in sym_stops)
+
+            def _place_fixed_fallback():
+                sp = round(cur * (1 - KELLY_LOSS_PCT), 2) if is_long else round(cur * (1 + KELLY_LOSS_PCT), 2)
+                client.submit_order(StopOrderRequest(
+                    symbol=sym, qty=qty, side=close_side,
+                    time_in_force=TimeInForce.GTC, stop_price=sp))
+                return sp
+
+            def _alert_naked(err):
+                print(f"[SWEEP] 🚨 {sym} could not be protected: {err}")
+                try:
+                    from alerts.slack import _post
+                    _post({"text": f"🚨 *AEGIS sweep* — {sym} is NAKED and could not be "
+                                   f"auto-protected ({str(err)[:60]}). CHECK MANUALLY NOW."})
+                except Exception:
+                    pass
+                actions.append({"ticker": sym, "action": "sweep_naked_ALERT"})
+
+            # (1) Already trailing — correct, skip (idempotent, no churn).
+            if has_trailing:
+                continue
+
+            # (2) Should be trailing but isn't — upgrade safely.
+            if pct >= trigger_pct:
+                for o in sym_stops:               # free the held qty first
+                    try: client.cancel_order_by_id(str(o.id))
+                    except Exception: pass
+                try:
+                    client.submit_order(TrailingStopOrderRequest(
+                        symbol=sym, qty=qty, side=close_side,
+                        time_in_force=TimeInForce.GTC, trail_percent=round(TRAIL_PCT * 100, 2)))
+                    print(f"[SWEEP] {sym} +{pct:.1f}% → placed trailing stop {TRAIL_PCT*100:.0f}% (was un-trailed)")
+                    actions.append({"ticker": sym, "action": "sweep_trailing", "pct": round(pct, 1)})
+                except Exception as e:
+                    print(f"[SWEEP] {sym} trailing placement failed ({str(e)[:60]}) — fixed-stop fallback")
+                    try:
+                        sp = _place_fixed_fallback()
+                        print(f"[SWEEP] {sym} fallback fixed stop @ ${sp}")
+                        actions.append({"ticker": sym, "action": "sweep_fallback_fixed", "stop": sp})
+                    except Exception as e2:
+                        _alert_naked(e2)
+                continue
+
+            # (3) Below trigger and NAKED — place a protective fixed stop.
+            if not has_fixed:
+                try:
+                    sp = _place_fixed_fallback()
+                    print(f"[SWEEP] {sym} was NAKED ({pct:+.1f}%) → placed fixed stop @ ${sp}")
+                    actions.append({"ticker": sym, "action": "sweep_naked_fixed", "stop": sp})
+                except Exception as e:
+                    _alert_naked(e)
+
+    except Exception as e:
+        print(f"[SWEEP] safety_sweep error: {e}")
+
+    print(f"[SWEEP] Safety sweep complete — {len(actions)} action(s)."
+          if actions else "[SWEEP] All positions correctly protected — no action needed.")
+    return actions

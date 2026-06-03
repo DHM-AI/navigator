@@ -1031,7 +1031,7 @@ def tighten_stop(ticker: str, stop_pct: float = 0.015) -> dict:
         return {"status": "error", "reason": str(e), "ticker": ticker}
 
 
-from execution.aegis import trail_positions  # noqa: F401
+from execution.aegis import trail_positions, safety_sweep  # noqa: F401
 
 
 def cancel_all_orders() -> int:

@@ -87,6 +87,16 @@ except Exception as _be:
 
 results = trail_positions()
 
+# BACKSTOP (2026-06-03): after the main pass, guarantee every position is
+# protected — no naked positions, and anything over +3% is trailing. Runs
+# regardless of what trail_positions did (it has had handoff bugs). Safe +
+# idempotent: skips already-correct positions.
+try:
+    from execution.alpaca import safety_sweep
+    safety_sweep()
+except Exception as _se:
+    print(f"[SWEEP] safety_sweep failed to run: {_se}")
+
 if not results:
     print("[AEGIS] Nothing to act on — all positions below trigger thresholds.")
 else:
