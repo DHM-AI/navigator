@@ -207,6 +207,17 @@ def _execute_trades(picks_df: pd.DataFrame, explanations: dict,
             print(f"  {ticker}: BLOCKED — {_msg}")
             _record_block(ticker, _msg)
             continue
+        # Audit M4 (2026-06-02): atr_pct == 0 means INSUFFICIENT HISTORY (new IPO,
+        # thin/illiquid name) — NOT "low volatility." technicals returns pct=0.0
+        # when there aren't enough rows. Such names are exactly the junk profile
+        # the filter targets, and a 0 would otherwise bypass BOTH the filter and
+        # ATR sizing (falling back to the flat 3% stop). Treat unknown as block.
+        if ENABLE_VOLATILITY_FILTER and _atr_pct <= 0:
+            _msg = ("Volatility filter — ATR unknown (insufficient price history); "
+                    "blocking auto-exec on thin/new ticker")
+            print(f"  {ticker}: BLOCKED — {_msg}")
+            _record_block(ticker, _msg)
+            continue
 
         # Hard stop — enforce position + trade limits using in-run counters
         # N-5 fix: refresh open_positions live from Alpaca every 5 picks so
@@ -322,7 +333,8 @@ def _execute_trades(picks_df: pd.DataFrame, explanations: dict,
         if is_crypto(ticker) and ENABLE_CRYPTO:
             alpaca_sym = CRYPTO_YFINANCE_TO_ALPACA.get(ticker, ticker)
             result = place_crypto_order(alpaca_sym, dollar, direction, reason,
-                                        execution_path=_execution_path)
+                                        execution_path=_execution_path,
+                                        atr_pct=_atr_pct)
         else:
             result = place_order(ticker, dollar, direction, reason,
                                  execution_path=_execution_path,

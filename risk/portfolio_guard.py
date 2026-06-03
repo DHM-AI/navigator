@@ -174,7 +174,7 @@ def check_trade(
         from execution.alpaca import get_closed_trade_pnl
         if BLOCK_SAME_DAY_REENTRY:
             _today = datetime.now(timezone.utc).strftime("%Y-%m-%d")
-            for _t in get_closed_trade_pnl(days=1):
+            for _t in get_closed_trade_pnl(days=1, raise_on_error=True):
                 if _t.get("ticker") != ticker:
                     continue
                 if not str(_t.get("closed_at", "")).startswith(_today):
@@ -190,7 +190,15 @@ def check_trade(
                         f"(anti-spiral; RYOJ lost $4,190 from 13 re-entries)"
                     )
     except Exception as e:
-        print(f"[THEMIS] Same-day re-entry check failed for {ticker}: {e} — allowing trade")
+        # FAIL CLOSED: if we can't verify whether the ticker already stopped out
+        # today, do NOT open new risk — block. (Audit 2026-06-02: previously
+        # "allowed trade" on any error, which silently disabled the anti-spiral
+        # breaker on exactly the bad days it exists for.)
+        print(f"[THEMIS] Same-day re-entry check ERRORED for {ticker}: {e} — BLOCKING (fail-closed)")
+        return False, (
+            f"Same-day lockout check unavailable for {ticker} "
+            f"({str(e)[:60]}) — blocking new entry as a precaution"
+        )
 
     # ── Check 1a5: Daily realized-loss kill-switch ────────────────────────────
     # May 27 ran unchecked to -$4,776. Once today's REALIZED (closed) P&L breaches
@@ -202,7 +210,8 @@ def check_trade(
         from execution.alpaca import get_closed_trade_pnl
         _today = datetime.now(timezone.utc).strftime("%Y-%m-%d")
         _realized_today = sum(
-            _t.get("realized_pnl", 0) for _t in get_closed_trade_pnl(days=1)
+            _t.get("realized_pnl", 0)
+            for _t in get_closed_trade_pnl(days=1, raise_on_error=True)
             if str(_t.get("closed_at", "")).startswith(_today)
         )
         _floor = -min(DAILY_REALIZED_LOSS_HALT_USD,
@@ -214,7 +223,15 @@ def check_trade(
                 f"Open positions still managed by AEGIS."
             )
     except Exception as e:
-        print(f"[THEMIS] Daily-loss-halt check failed for {ticker}: {e} — allowing trade")
+        # FAIL CLOSED: if today's realized P&L can't be computed, we cannot rule
+        # out that the daily loss floor has already been breached — block new
+        # entries. (Audit 2026-06-02: previously allowed trades on any fetch
+        # error, silently disabling the kill-switch on a bleeding day.)
+        print(f"[THEMIS] Daily-loss-halt check ERRORED for {ticker}: {e} — BLOCKING (fail-closed)")
+        return False, (
+            f"Daily loss-halt check unavailable ({str(e)[:60]}) — "
+            f"blocking new entries as a precaution. AEGIS still manages open positions."
+        )
 
     # ── Check 1b: Recent-loss cooldown ────────────────────────────────────────
     # Prevent "death by a thousand cuts" pattern where same volume/RSI signal
@@ -223,7 +240,7 @@ def check_trade(
     try:
         from config import LOSS_COOLDOWN_HOURS, LOSS_COOLDOWN_PCT
         from execution.alpaca import get_closed_trade_pnl
-        recent_closed = get_closed_trade_pnl(days=3)
+        recent_closed = get_closed_trade_pnl(days=3, raise_on_error=True)
         now_ts = datetime.now(timezone.utc)
         for t in recent_closed:
             if t.get("ticker") != ticker:
@@ -248,7 +265,12 @@ def check_trade(
                     f"blocking re-entry for {LOSS_COOLDOWN_HOURS}h"
                 )
     except Exception as e:
-        print(f"[THEMIS] Loss cooldown check failed for {ticker}: {e} — allowing trade")
+        # FAIL CLOSED: can't verify recent stop-outs -> don't re-enter (audit 2026-06-02).
+        print(f"[THEMIS] Loss cooldown check ERRORED for {ticker}: {e} — BLOCKING (fail-closed)")
+        return False, (
+            f"Loss-cooldown check unavailable for {ticker} "
+            f"({str(e)[:60]}) — blocking re-entry as a precaution"
+        )
 
     # ── Check 1c: Minimum stock price floor ───────────────────────────────────
     # Sub-$5 stocks have wide spreads and low liquidity — your position size

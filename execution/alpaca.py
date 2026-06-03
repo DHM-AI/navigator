@@ -249,9 +249,33 @@ def place_order(ticker: str, dollar_amount: float, direction: str,
             return {"status": "skipped", "ticker": ticker,
                     "reason": "Market closed — no entries outside regular trading hours"}
     except Exception as _clk_err:
-        # If the clock check itself fails, don't block trading (fail-open) — but
-        # log it so a persistent clock outage is visible.
-        print(f"[APEX] {ticker} market-hours check failed: {_clk_err} — proceeding")
+        # FAIL CLOSED (audit 2026-06-02): previously proceeded on clock error,
+        # which re-opened the exact after-hours-gap hole this gate exists to stop.
+        # Fall back to an ET regular-trading-hours window check; if we cannot
+        # positively confirm we're inside RTH, SKIP the entry.
+        print(f"[APEX] {ticker} market-hours API check failed: {_clk_err} — falling back to ET clock")
+        try:
+            from datetime import datetime as _dt
+            try:
+                from zoneinfo import ZoneInfo
+                _now_et = _dt.now(ZoneInfo("America/New_York"))
+            except Exception:
+                # No tz database — derive ET from UTC (EDT=-4; conservative)
+                from datetime import timezone as _tz, timedelta as _td
+                _now_et = _dt.now(_tz.utc).astimezone(_tz(_td(hours=-4)))
+            _mins = _now_et.hour * 60 + _now_et.minute
+            _is_rth = (_now_et.weekday() < 5) and (9 * 60 + 30 <= _mins < 16 * 60)
+            if not _is_rth:
+                print(f"[APEX] {ticker} skipped — ET fallback says market CLOSED "
+                      f"({_now_et:%a %H:%M ET})")
+                return {"status": "skipped", "ticker": ticker,
+                        "reason": "Market closed (ET fallback) — no entries outside RTH"}
+            print(f"[APEX] {ticker} ET fallback confirms RTH ({_now_et:%a %H:%M ET}) — proceeding")
+        except Exception as _fb_err:
+            # Cannot confirm RTH at all -> fail closed.
+            print(f"[APEX] {ticker} ET fallback also failed: {_fb_err} — SKIPPING (fail-closed)")
+            return {"status": "skipped", "ticker": ticker,
+                    "reason": "Market-hours unverifiable — skipping entry (fail-closed)"}
 
     if not _check_daily_loss_limit():
         return {"status": "halted", "reason": "Daily loss limit breached (5%). No new trades today."}
@@ -334,7 +358,15 @@ def place_order(ticker: str, dollar_amount: float, direction: str,
     _tp_pct = DAY_TRADE_TARGET_PCT if _is_day_trade else MOVE_TARGET_PCT
     _sl_pct, _effective_notional = _resolve_stop_and_size(
         dollar_amount, atr_pct, _is_day_trade, ticker)
-    qty = max(1, round(_effective_notional / price))
+    # Audit H1 (2026-06-02): if the ATR-rescaled notional rounds to < 1 share,
+    # SKIP rather than force max(1,...). Forcing 1 share breaks the constant-$
+    # risk guarantee (1 share of a high-priced name can exceed the risk budget).
+    qty = round(_effective_notional / price)
+    if qty < 1:
+        print(f"[APEX] {ticker} skipped — ATR-sized notional ${_effective_notional:.0f} "
+              f"@ ${price:.2f} rounds to <1 share (would break constant-$ risk)")
+        return {"status": "skipped", "ticker": ticker,
+                "reason": f"Position too small after ATR sizing (<1 share @ ${price:.2f})"}
     if side == "buy":
         stop_price  = round(price * (1 - _sl_pct), 2)
         limit_price = round(price * (1 + _tp_pct), 2)
@@ -407,7 +439,11 @@ def place_order(ticker: str, dollar_amount: float, direction: str,
                     else:
                         stop_price  = round(actual_price * (1 + _sl_pct), 2)
                         limit_price = round(actual_price * (1 - _tp_pct), 2)
-                    qty = max(1, round(_effective_notional / actual_price))
+                    qty = round(_effective_notional / actual_price)
+                    if qty < 1:
+                        print(f"[APEX] {ticker} retry skipped — <1 share at corrected ${actual_price:.2f}")
+                        return {"status": "skipped", "ticker": ticker,
+                                "reason": "Position <1 share after price correction (constant-$ risk)"}
                     print(f"[APEX] Retrying bracket with corrected price ${actual_price:.2f} "
                           f"→ SL ${stop_price:.2f} / TP ${limit_price:.2f}")
                     from alpaca.trading.client import TradingClient
@@ -620,7 +656,7 @@ def get_positions() -> list[dict]:
         return []
 
 
-def get_closed_trade_pnl(days: int = 60) -> list[dict]:
+def get_closed_trade_pnl(days: int = 60, raise_on_error: bool = False) -> list[dict]:
     """
     Fetch realized P&L for ALL closed trades — bracket exits AND manual closes.
 
@@ -630,8 +666,16 @@ def get_closed_trade_pnl(days: int = 60) -> list[dict]:
     Returns list of dicts:
         ticker, side, qty, entry_price, exit_price, realized_pnl,
         realized_pnl_pct, outcome ('tp_hit'|'sl_hit'|'manual'), closed_at
+
+    raise_on_error: when True, a fetch/parse FAILURE re-raises instead of
+    returning []. Safety-critical callers (loss-day circuit breakers) MUST set
+    this so they can tell "no closed trades" (safe, []) apart from "couldn't
+    fetch" (must fail CLOSED). An empty [] from a genuine no-trades state is
+    NOT an error and never raises.
     """
     if not is_configured():
+        if raise_on_error:
+            raise RuntimeError("Alpaca not configured — cannot fetch closed P&L")
         return []
     try:
         from alpaca.trading.requests import GetOrdersRequest
@@ -786,6 +830,8 @@ def get_closed_trade_pnl(days: int = 60) -> list[dict]:
 
     except Exception as e:
         print(f"[APEX] get_closed_trade_pnl error: {e}")
+        if raise_on_error:
+            raise
         return []
 
 
@@ -997,7 +1043,7 @@ def cancel_all_orders() -> int:
 
 def place_crypto_order(alpaca_symbol: str, dollar_amount: float,
                        direction: str, reason: str = "",
-                       execution_path: str = "") -> dict:
+                       execution_path: str = "", atr_pct: float = 0.0) -> dict:
     """
     Place a crypto market order via Alpaca.
 
@@ -1005,8 +1051,13 @@ def place_crypto_order(alpaca_symbol: str, dollar_amount: float,
     - Crypto uses GTC (not DAY) — markets are 24/7
     - No bracket orders for crypto — places separate stop + limit orders after fill
     - Fractional crypto always supported (uses notional dollar amount)
+
+    Audit 2026-06-02: crypto now goes through the SAME risk envelope as equities —
+    the MAX_POSITION_PCT cap and ATR-based stop + constant-$-risk sizing
+    (_resolve_stop_and_size) — and FAILS CLOSED if it cannot attach protection
+    (alerts + closes the just-opened position instead of leaving it naked).
     """
-    from config import KELLY_LOSS_PCT, MOVE_TARGET_PCT
+    from config import KELLY_LOSS_PCT, MOVE_TARGET_PCT, BANKROLL, MAX_POSITION_PCT
     if not is_configured():
         return {"status": "skipped", "reason": "Alpaca not configured"}
 
@@ -1014,6 +1065,17 @@ def place_crypto_order(alpaca_symbol: str, dollar_amount: float,
     if not _check_daily_loss_limit():
         return {"status": "rejected_loss_limit",
                 "reason": "Daily loss limit hit — crypto path also halted"}
+
+    # Audit C1: cap position size (was unbounded — equities cap at 8%, crypto didn't).
+    _cap = BANKROLL * MAX_POSITION_PCT
+    if dollar_amount > _cap:
+        print(f"[APEX] CRYPTO {alpaca_symbol}: ${dollar_amount:.0f} capped to "
+              f"${_cap:.0f} (MAX_POSITION_PCT {MAX_POSITION_PCT:.0%})")
+        dollar_amount = _cap
+    # Audit C1: ATR stop + constant-$-risk notional rescale (same as equities).
+    _sl_pct, _effective_notional = _resolve_stop_and_size(
+        dollar_amount, atr_pct, False, alpaca_symbol)
+    dollar_amount = _effective_notional
 
     mode = "LIVE" if is_live_mode() else "PAPER"
     side = "buy" if direction in ("bullish", "long") else "sell"
@@ -1040,30 +1102,60 @@ def place_crypto_order(alpaca_symbol: str, dollar_amount: float,
             dc    = CryptoHistoricalDataClient(ALPACA_API_KEY, ALPACA_SECRET_KEY)
             quote = dc.get_crypto_latest_quote(CryptoLatestQuoteRequest(symbol_or_symbols=alpaca_symbol))
             price = float(quote[alpaca_symbol].ask_price)
-            qty   = dollar_amount / price
+            # Audit C1: protective orders sized to the POSITION qty (was full
+            # notional on BOTH legs — two full-size resting sells could exceed
+            # the held position). Round qty to 6dp (crypto is fractional).
+            qty   = round(dollar_amount / price, 6) if price else 0
 
             if side == "buy":
-                sl_price = round(price * (1 - KELLY_LOSS_PCT), 2)
+                sl_price = round(price * (1 - _sl_pct), 2)
                 tp_price = round(price * (1 + MOVE_TARGET_PCT), 2)
                 sl_side  = OrderSide.SELL
                 tp_side  = OrderSide.SELL
             else:
-                sl_price = round(price * (1 + KELLY_LOSS_PCT), 2)
+                sl_price = round(price * (1 + _sl_pct), 2)
                 tp_price = round(price * (1 - MOVE_TARGET_PCT), 2)
                 sl_side  = OrderSide.BUY
                 tp_side  = OrderSide.BUY
 
-            # Stop loss
+            if qty <= 0:
+                raise ValueError(f"computed qty {qty} <= 0 (price={price})")
+            # Stop loss (qty-based, not notional)
             client.submit_order(StopOrderRequest(
-                symbol=alpaca_symbol, notional=round(dollar_amount, 2),
+                symbol=alpaca_symbol, qty=qty,
                 side=sl_side, time_in_force=TimeInForce.GTC, stop_price=sl_price))
-            # Take profit
+            # Take profit (qty-based)
             client.submit_order(LimitOrderRequest(
-                symbol=alpaca_symbol, notional=round(dollar_amount, 2),
+                symbol=alpaca_symbol, qty=qty,
                 side=tp_side, time_in_force=TimeInForce.GTC, limit_price=tp_price))
-            print(f"         SL: ${sl_price:.2f}  TP: ${tp_price:.2f}")
+            print(f"         SL: ${sl_price:.2f} ({_sl_pct*100:.1f}%)  TP: ${tp_price:.2f}  qty={qty}")
         except Exception as pe:
-            print(f"[APEX] Crypto SL/TP placement failed: {pe} — position is unprotected")
+            # Audit C2: FAIL CLOSED — never leave a filled crypto position naked.
+            # Previously this printed a warning and returned "submitted". Now we
+            # alert loudly AND close the just-opened position.
+            print(f"[APEX] 🚨 Crypto SL/TP placement FAILED for {alpaca_symbol}: {pe} — closing to avoid naked position")
+            _closed_ok = False
+            try:
+                _cl = close_position(alpaca_symbol)
+                _closed_ok = _cl.get("status") in ("submitted", "closed", "ok")
+            except Exception as _ce:
+                print(f"[APEX] follow-up close also failed for {alpaca_symbol}: {_ce}")
+            try:
+                from alerts.slack import _post
+                _post({"text": (
+                    f"🚨 *APEX crypto naked-position guard* — {alpaca_symbol} {side.upper()} "
+                    f"filled but stop/TP FAILED ({str(pe)[:80]}). "
+                    f"{'Position auto-closed.' if _closed_ok else '⚠️ AUTO-CLOSE ALSO FAILED — CHECK MANUALLY NOW.'}"
+                )})
+            except Exception:
+                pass
+            return {
+                "status": "closed_unprotected" if _closed_ok else "naked_alert",
+                "ticker": alpaca_symbol, "side": side,
+                "reason": f"SL/TP failed ({str(pe)[:80]}); "
+                          f"{'position closed' if _closed_ok else 'CLOSE FAILED — manual action required'}",
+                "asset_class": "crypto", "mode": mode,
+            }
 
         result = {
             "status":        "submitted",

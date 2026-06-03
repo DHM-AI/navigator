@@ -15,11 +15,14 @@ from config import (
 _model = None
 _calibrator = None
 _feature_names: list[str] = []
+_model_consistency_error: str | None = None   # set at load; checked loudly in predict_universe
+_xgb_calls = 0     # inference attempts this scan
+_xgb_fails = 0     # inference exceptions this scan (model-level failure signal)
 
 
 def _load_model():
     """Lazy-load the XGB model, the Platt-scaling calibrator, and feature names."""
-    global _model, _calibrator, _feature_names
+    global _model, _calibrator, _feature_names, _model_consistency_error
     if _model is not None:
         return _model
     if not os.path.exists(MODEL_PATH):
@@ -29,6 +32,24 @@ def _load_model():
     if os.path.exists(FEATURE_NAMES_PATH):
         with open(FEATURE_NAMES_PATH) as f:
             _feature_names = json.load(f)
+    # Audit H1 (2026-06-02): a model whose feature count disagrees with
+    # feature_names.json silently produces WRONG predictions (mismatched columns)
+    # that still drive the auto-exec gate + Kelly sizing. Record any mismatch so
+    # predict_universe can fail LOUDLY instead of inferring on garbage. (Stored,
+    # not raised here, because _xgb_prob's per-ticker try/except would swallow a
+    # raise into silent zeros — the exact failure mode we're closing.)
+    _nfeat = getattr(_model, "n_features_in_", None)
+    if _nfeat is not None and _feature_names and _nfeat != len(_feature_names):
+        _model_consistency_error = (
+            f"Model expects {_nfeat} features but feature_names.json has "
+            f"{len(_feature_names)} — mismatched columns. Regenerate feature_names "
+            f"on every retrain.")
+    elif _nfeat is not None and not _feature_names:
+        _model_consistency_error = (
+            "Model loaded but feature_names.json missing/empty — cannot build the "
+            "feature vector.")
+    else:
+        _model_consistency_error = None
     # Load calibrator if present + enabled. Missing calibrator just means we
     # fall back to raw XGB probabilities (no error).
     if ENABLE_CALIBRATION and os.path.exists(CALIBRATOR_PATH):
@@ -53,12 +74,14 @@ def calibrator_available() -> bool:
 
 def _xgb_prob(df: pd.DataFrame) -> float:
     """Return calibrated probability if calibrator is loaded, else raw XGB prob."""
+    global _xgb_calls, _xgb_fails
     model = _load_model()
     if model is None or df.empty:
         return 0.0
+    if not _feature_names:
+        return 0.0
+    _xgb_calls += 1
     try:
-        if not _feature_names:
-            return 0.0
         features = compute_feature_row(df)
         row = [features.get(col, 0.0) for col in _feature_names]
         X = np.array(row).reshape(1, -1)
@@ -72,6 +95,10 @@ def _xgb_prob(df: pd.DataFrame) -> float:
 
         return max(0.0, min(1.0, raw_prob))
     except Exception:
+        # Audit H2: still return 0 (per-ticker safety) but COUNT it — a model-level
+        # failure shows up as a high fail ratio and is alerted in predict_universe,
+        # so a broken model no longer looks identical to a quiet market.
+        _xgb_fails += 1
         return 0.0
 
 
@@ -92,6 +119,24 @@ def predict_universe(
         return rule_score_universe(tickers, ohlcv_map, sentiment_map, earnings_map)
 
     from signals.scorer import score_ticker  # for direction/duration/signals logic
+
+    # Audit H1: fail LOUD on a model/feature mismatch instead of silently scoring
+    # everything on mismatched columns. _load_model populates the flag.
+    global _xgb_calls, _xgb_fails
+    _xgb_calls = 0
+    _xgb_fails = 0
+    _load_model()
+    if _model_consistency_error:
+        msg = f"PYTHIA model consistency FAILURE: {_model_consistency_error}"
+        print(f"[PYTHIA] 🚨 {msg}")
+        try:
+            from alerts.slack import _post
+            _post({"text": f"🚨 *PYTHIA model broken* — {_model_consistency_error} "
+                           f"Scan aborted; no trades on mismatched model."})
+        except Exception:
+            pass
+        raise RuntimeError(msg)
+
     rows = []
     skipped_errors = 0
     for ticker in tickers:
@@ -147,6 +192,21 @@ def predict_universe(
 
     if skipped_errors > 5:
         print(f"[PYTHIA] ...and {skipped_errors - 5} more tickers skipped silently.")
+
+    # Audit H2: if model inference failed on a large fraction of tickers, the
+    # model (not the market) is broken — alert loudly instead of reporting a
+    # quiet "no setups" day driven by all-zero probabilities.
+    if _xgb_calls >= 20 and _xgb_fails / _xgb_calls > 0.5:
+        ratio = _xgb_fails / _xgb_calls
+        print(f"[PYTHIA] 🚨 Model inference FAILED on {_xgb_fails}/{_xgb_calls} "
+              f"tickers ({ratio:.0%}) — model likely broken, not a quiet market.")
+        try:
+            from alerts.slack import _post
+            _post({"text": f"🚨 *PYTHIA model failing* — XGB inference errored on "
+                           f"{ratio:.0%} of {_xgb_calls} tickers this scan. "
+                           f"Predictions are defaulting to sentiment-only. Check the model."})
+        except Exception:
+            pass
 
     if not rows:
         return pd.DataFrame()
