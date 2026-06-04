@@ -503,19 +503,39 @@ else:
         if "trailing" in otype:
             trailing_tickers.add(o.symbol)
 
-    should_trail  = [
-        p["ticker"] for p in alpaca_positions
-        if p.get("unrealized_pl_pct", 0) >= TRAIL_TRIGGER_PCT
-    ]
-    missing_trail = [t for t in should_trail if t not in trailing_tickers]
+    # Grace buffer (2026-06-04): AEGIS runs on an INTERVAL (~15-30 min), not
+    # continuously, so a position that just crossed +3% is normally not trailing
+    # YET — it's still protected by its fixed bracket stop, just waiting for the
+    # next AEGIS run to upgrade it. That's not a failure, and warning on it made
+    # AEGIS look perpetually broken. Only WARN when a position is well past the
+    # trigger (trigger + grace) and STILL not trailing — i.e. AEGIS has clearly
+    # had its chance and missed it (genuinely stuck). The just-crossed band is a
+    # PASS with an informational note. (Naked positions are caught by Check 1.)
+    TRAIL_GRACE_PCT = 2.5
+    should_trail = [p for p in alpaca_positions
+                    if p.get("unrealized_pl_pct", 0) >= TRAIL_TRIGGER_PCT]
+    overdue = [p["ticker"] for p in should_trail
+               if p["ticker"] not in trailing_tickers
+               and p.get("unrealized_pl_pct", 0) >= TRAIL_TRIGGER_PCT + TRAIL_GRACE_PCT]
+    pending = [p["ticker"] for p in should_trail
+               if p["ticker"] not in trailing_tickers
+               and p.get("unrealized_pl_pct", 0) < TRAIL_TRIGGER_PCT + TRAIL_GRACE_PCT]
 
-    if missing_trail:
+    if overdue:
         report.add("Trailing Stop Coverage", "WARN",
-                   f"Up >3% but no trailing stop: {', '.join(missing_trail)} "
-                   f"— AEGIS may need to run")
+                   f"Up >{TRAIL_TRIGGER_PCT + TRAIL_GRACE_PCT:.0f}% but STILL no trailing stop: "
+                   f"{', '.join(overdue)} — well past the trigger, AEGIS may be stuck "
+                   f"(protected by fixed stops, but not locking profit)")
     elif should_trail:
-        report.add("Trailing Stop Coverage", "PASS",
-                   f"All {len(should_trail)} profitable position(s) have trailing stops")
+        trailing_n = len(should_trail) - len(pending)
+        if pending:
+            report.add("Trailing Stop Coverage", "PASS",
+                       f"{trailing_n} trailing · {len(pending)} just crossed +3% "
+                       f"({', '.join(pending)}) — will trail on next AEGIS run, "
+                       f"protected by fixed stop meanwhile")
+        else:
+            report.add("Trailing Stop Coverage", "PASS",
+                       f"All {len(should_trail)} eligible position(s) have trailing stops")
     else:
         report.add("Trailing Stop Coverage", "PASS",
                    f"No positions up >3% yet — trailing stops not required")
