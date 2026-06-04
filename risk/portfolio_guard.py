@@ -18,11 +18,14 @@ Usage in agent.py:
 """
 
 import yfinance as yf
+from config import CANARY_MODE, CANARY_MAX_OPEN_POSITIONS, CANARY_MAX_DAILY_TRADES
 
 # ── Config ────────────────────────────────────────────────────────────────────
-MAX_OPEN_POSITIONS  = 10     # max concurrent holdings (Option 3: 8%×10 = ~80% deployed)
+# Canary (live ramp-up) shrinks position count + daily trades; full-size values
+# live in the else branch. Flip CANARY_MODE in config.py to switch back.
+MAX_OPEN_POSITIONS  = CANARY_MAX_OPEN_POSITIONS if CANARY_MODE else 10  # max concurrent holdings
 MAX_SECTOR_PCT      = 0.35   # max 35% portfolio in one sector
-MAX_DAILY_TRADES    = 20     # max new auto-executions per day
+MAX_DAILY_TRADES    = CANARY_MAX_DAILY_TRADES if CANARY_MODE else 20    # max new auto-executions per day
 MAX_DIRECTION_PCT   = 0.80   # warn if >80% of positions same direction
 
 _sector_cache: dict[str, str] = {}  # ticker → sector (cached across calls)

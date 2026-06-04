@@ -142,7 +142,17 @@ BANKROLL          = float(os.getenv("BANKROLL", "153000"))
 KELLY_WIN_PCT     = 0.10   # expected gain on a win (trailing stops avg ~10% on winners)
 KELLY_LOSS_PCT    = 0.03   # expected loss if wrong (3% stop)
 KELLY_FRACTION    = 0.5    # use half-Kelly for safety
-MAX_POSITION_PCT  = 0.08   # 8% per trade (was 15%; rebased to real account, Option 3)
+# ── Live ramp-up ("canary") ────────────────────────────────────────────────────
+# Small real-money positions for the first weeks live, so a bad day costs ~$100
+# instead of real money. SAME strategy / signals / stops — only position SIZE and
+# COUNT shrink. To return to full size after live validation: set CANARY_MODE =
+# False (one line) and everything reverts to the full values below.
+CANARY_MODE               = True
+CANARY_MAX_POSITION_PCT   = 0.02   # ~$500/trade on a $25k account
+CANARY_MAX_OPEN_POSITIONS = 3      # ~$1,500 max real exposure
+CANARY_MAX_DAILY_TRADES   = 4      # calm turnover while ramping
+FULL_MAX_POSITION_PCT     = 0.08   # 8% per trade (rebased to real account, Option 3)
+MAX_POSITION_PCT  = CANARY_MAX_POSITION_PCT if CANARY_MODE else FULL_MAX_POSITION_PCT
 DAILY_LOSS_LIMIT_PCT = 0.05  # halt trading if down 5% in a day
 
 # ── Sentiment Guard ───────────────────────────────────────────────────────────
