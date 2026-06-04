@@ -155,6 +155,14 @@ FULL_MAX_POSITION_PCT     = 0.08   # 8% per trade (rebased to real account, Opti
 MAX_POSITION_PCT  = CANARY_MAX_POSITION_PCT if CANARY_MODE else FULL_MAX_POSITION_PCT
 DAILY_LOSS_LIMIT_PCT = 0.05  # halt trading if down 5% in a day
 
+# Minimum share price to TRADE. Penny stocks (<$5 — the SEC's penny-stock line)
+# caused 100% of the system's net losses in paper testing: RYOJ alone lost
+# -$4,170 on a $3.78 stock. Excluding sub-$5 names flips the closed-trade record
+# from -$2,655 to +$1,020. Enforced as a HARD pre-trade gate (execution/alpaca.py)
+# AND a pre-scoring skip (signals/scorer.py) so junk is never scored or traded.
+# (Renato 2026-06-04)
+MIN_PRICE = 5.0
+
 # ── Sentiment Guard ───────────────────────────────────────────────────────────
 # Monitors open positions for sentiment reversal and takes protective action.
 # Scores range from -1.0 (very bearish) to +1.0 (very bullish).

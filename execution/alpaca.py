@@ -25,7 +25,7 @@ import os
 from datetime import datetime
 from config import (BANKROLL, ALPACA_API_KEY, ALPACA_SECRET_KEY,
                     ALPACA_LIVE_MODE,
-                    MAX_POSITION_PCT, DAILY_LOSS_LIMIT_PCT,
+                    MAX_POSITION_PCT, DAILY_LOSS_LIMIT_PCT, MIN_PRICE,
                     KELLY_LOSS_PCT, MOVE_TARGET_PCT,
                     DAY_TRADE_STOP_PCT, DAY_TRADE_TARGET_PCT,
                     ENABLE_ATR_STOPS, ATR_STOP_MULT,
@@ -378,6 +378,15 @@ def place_order(ticker: str, dollar_amount: float, direction: str,
     if price is None or price <= 0:
         print(f"[APEX] Could not get price for {ticker} — skipping (no unprotected order placed)")
         return {"status": "skipped", "reason": f"Could not fetch price for {ticker}"}
+
+    # ── Penny-stock gate (HARD) ───────────────────────────────────────────────
+    # Never trade equities below MIN_PRICE. Sub-$5 names caused 100% of the
+    # system's net losses in paper (RYOJ -$4,170 on a $3.78 stock). This is the
+    # authoritative entry gate; scorer.py also skips them before scoring.
+    if price < MIN_PRICE:
+        print(f"[APEX] {ticker} skipped — ${price:.2f} below ${MIN_PRICE:.0f} min (penny-stock filter)")
+        return {"status": "skipped", "ticker": ticker,
+                "reason": f"Price ${price:.2f} below ${MIN_PRICE:.2f} minimum (penny-stock filter)"}
 
     # Stop loss and take profit prices — DAY trades use tighter bracket
     _tp_pct = DAY_TRADE_TARGET_PCT if _is_day_trade else MOVE_TARGET_PCT

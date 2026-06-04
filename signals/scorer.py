@@ -8,7 +8,7 @@ from signals.analyst import get_analyst_signal
 from signals.weekly_trend import get_weekly_trend, weekly_modifier
 from signals.sector_momentum import get_sector_momentum
 from data.fetcher import get_earnings_days
-from config import WEIGHTS, EARNINGS_PROXIMITY_DAYS, MIN_SCORE_TO_ALERT
+from config import WEIGHTS, EARNINGS_PROXIMITY_DAYS, MIN_SCORE_TO_ALERT, MIN_PRICE
 
 
 SECTOR_MOMENTUM_BONUS = 5   # soft +5 for picks whose sector ETF is above 50MA
@@ -315,6 +315,15 @@ def score_universe(
     rows = []
     for ticker in tickers:
         df = ohlcv_map.get(ticker, pd.DataFrame())
+        # Penny-stock filter: never score sub-$MIN_PRICE names (they caused 100%
+        # of net losses in paper). The hard entry gate in alpaca.py enforces it
+        # again at execution; this just keeps junk out of the scored picks.
+        if not df.empty:
+            try:
+                if float(df["Close"].iloc[-1]) < MIN_PRICE:
+                    continue
+            except Exception:
+                pass
         sentiment = (sentiment_map or {}).get(ticker)
         earnings = (earnings_map or {}).get(ticker)
         result = score_ticker(ticker, df, sentiment, earnings)
