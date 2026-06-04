@@ -3,6 +3,13 @@ import os
 
 load_dotenv()
 
+# ── Environment: "prod" (live system) or "lab" (paper sandbox for experiments) ──
+# Defaults to "prod" → ZERO behavior change for the live system. When the LAB
+# copy sets SYSTEM_ENV=lab, alerts + dashboard are clearly marked [LAB] so the
+# experimental paper copy can never be confused with the real-money system.
+SYSTEM_ENV = os.getenv("SYSTEM_ENV", "prod").strip().lower()
+IS_LAB     = SYSTEM_ENV == "lab"
+
 # ── API Keys ──────────────────────────────────────────────────────────────────
 ANTHROPIC_API_KEY  = os.getenv("ANTHROPIC_API_KEY", "")
 ALPHA_VANTAGE_KEY  = os.getenv("ALPHA_VANTAGE_KEY", "")

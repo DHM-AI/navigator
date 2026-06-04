@@ -22,13 +22,23 @@ import json
 import urllib.request
 import urllib.error
 from datetime import datetime
-from config import SLACK_WEBHOOK_URL
+from config import SLACK_WEBHOOK_URL, IS_LAB
 
 
 # ── Helpers ───────────────────────────────────────────────────────────────────
 
 def _post(payload: dict) -> bool:
     """POST a JSON payload to the configured Slack webhook. Returns True on success."""
+    if IS_LAB:
+        # Mark EVERY lab message so it's unmistakable from live alerts. No-op in
+        # prod (IS_LAB is False there). Prefixes the notification text and, for
+        # block-based messages, prepends a context banner.
+        payload = dict(payload)
+        payload["text"] = f"🧪 [LAB] {payload.get('text') or ''}".rstrip()
+        if isinstance(payload.get("blocks"), list):
+            payload["blocks"] = [{"type": "context", "elements": [
+                {"type": "mrkdwn", "text": "🧪 *LAB / PAPER — experimental, not live money*"}]}
+            ] + payload["blocks"]
     if not SLACK_WEBHOOK_URL:
         print("[slack] SLACK_WEBHOOK_URL not set — skipping notification.")
         return False
