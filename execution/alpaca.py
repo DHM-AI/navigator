@@ -84,13 +84,12 @@ def is_live_mode() -> bool:
 def get_account() -> dict:
     client = _get_client()
     acct = client.get_account()
-    # daytrading_buying_power is what bracket orders (TimeInForce.DAY) actually
-    # consume. Different from regt_buying_power (overnight) and buying_power
-    # (overall). With many open positions, DT-BP is what gets exhausted first.
-    dt_bp = getattr(acct, "daytrading_buying_power", None) or getattr(acct, "day_trading_buying_power", None)
+    # Intraday order capacity. Alpaca retired the PDT rule (2026) and deprecated
+    # `daytrading_buying_power` (removed ~July 6, 2026). Per Alpaca guidance we
+    # use `buying_power`, which under the new intraday-margin framework reflects
+    # available intraday buying power. regt_buying_power = overnight (Reg-T).
     return {
         "buying_power":            float(acct.buying_power),
-        "daytrading_buying_power": float(dt_bp) if dt_bp is not None else float(acct.buying_power),
         "regt_buying_power":       float(getattr(acct, "regt_buying_power", acct.buying_power)),
         "portfolio_value":         float(acct.portfolio_value),
         "cash":                    float(acct.cash),
@@ -170,21 +169,23 @@ def reset_bp_cache() -> None:
 def _check_buying_power(dollar_amount: float, ticker: str,
                         notify: bool = True) -> tuple[bool, str]:
     """
-    Pre-trade DT-BP check. Returns (ok, reason).
-    Bracket orders (TimeInForce.DAY) consume daytrading_buying_power.
-    Reject early if the trade would exceed 90% of available DT-BP.
+    Pre-trade buying-power check. Returns (ok, reason).
+    Reject early if the trade would exceed the usable fraction
+    (_BP_SAFETY_FACTOR) of available buying power. Under Alpaca's post-PDT
+    intraday-margin framework, `buying_power` is the relevant intraday capacity
+    (the old `daytrading_buying_power` field was deprecated/removed in 2026).
 
     notify: when True (default), posts a Slack alert ONCE per scan when
-            DT-BP first hits exhaustion. Set False from diagnostic/test
+            buying power first hits exhaustion. Set False from diagnostic/test
             callers to avoid polluting Slack.
     """
     global _dt_bp_exhausted_for_scan
     if _dt_bp_exhausted_for_scan:
-        return False, "day-trading buying power exhausted earlier in this scan"
+        return False, "buying power exhausted earlier in this scan"
     try:
         acct = get_account()
-        dt_bp = acct.get("daytrading_buying_power", 0)
-        usable = dt_bp * _BP_SAFETY_FACTOR
+        bp = acct.get("buying_power", 0)
+        usable = bp * _BP_SAFETY_FACTOR
         if dollar_amount > usable:
             # Mark exhausted so subsequent orders short-circuit
             _dt_bp_exhausted_for_scan = True
@@ -194,8 +195,8 @@ def _check_buying_power(dollar_amount: float, ticker: str,
                     from alerts.slack import _post
                     _post({
                         "text": (
-                            f"⚠️ *DT-BP exhausted* — skipping remaining trades this scan\n"
-                            f"> Available: ${dt_bp:,.0f}  ·  Need: ${dollar_amount:,.0f}  ·  "
+                            f"⚠️ *Buying power exhausted* — skipping remaining trades this scan\n"
+                            f"> Available: ${bp:,.0f}  ·  Need: ${dollar_amount:,.0f}  ·  "
                             f"Tried: `{ticker}`\n"
                             f"> Close some positions or wait until next session."
                         ),
@@ -203,8 +204,8 @@ def _check_buying_power(dollar_amount: float, ticker: str,
                 except Exception:
                     pass
             return False, (
-                f"insufficient day-trading buying power "
-                f"(need ${dollar_amount:,.0f}, have ${dt_bp:,.0f}, "
+                f"insufficient buying power "
+                f"(need ${dollar_amount:,.0f}, have ${bp:,.0f}, "
                 f"usable ${usable:,.0f})"
             )
         return True, ""
