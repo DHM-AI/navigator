@@ -17,13 +17,14 @@ SAFETY DEFAULTS:
   - All trades logged to Supabase
 
 To enable live trading:
-  Set ALPACA_BASE_URL=https://api.alpaca.markets AND ALPACA_LIVE_MODE=true
-  DO NOT go live before 30 days of paper trading validation.
+  Set ALPACA_LIVE_MODE=true (plus live ALPACA_API_KEY/ALPACA_SECRET_KEY).
+  The alpaca-py SDK picks the live vs paper endpoint from the paper= flag alone
+  (driven by ALPACA_LIVE_MODE) — there is no base URL to set.
 """
 import os
 from datetime import datetime
 from config import (BANKROLL, ALPACA_API_KEY, ALPACA_SECRET_KEY,
-                    ALPACA_BASE_URL, ALPACA_LIVE_MODE,
+                    ALPACA_LIVE_MODE,
                     MAX_POSITION_PCT, DAILY_LOSS_LIMIT_PCT,
                     KELLY_LOSS_PCT, MOVE_TARGET_PCT,
                     DAY_TRADE_STOP_PCT, DAY_TRADE_TARGET_PCT,

@@ -18,7 +18,10 @@ SUPABASE_KEY = os.getenv("SUPABASE_KEY", "")
 # ── Alpaca ────────────────────────────────────────────────────────────────────
 ALPACA_API_KEY    = os.getenv("ALPACA_API_KEY", "")
 ALPACA_SECRET_KEY = os.getenv("ALPACA_SECRET_KEY", "")
-ALPACA_BASE_URL   = os.getenv("ALPACA_BASE_URL", "https://paper-api.alpaca.markets")
+# NOTE: There is no ALPACA_BASE_URL. The alpaca-py SDK selects the live vs paper
+# endpoint solely from the TradingClient(paper=...) flag, which we drive from
+# ALPACA_LIVE_MODE below. Setting a base URL has no effect — DO NOT add one back.
+# To go live: set ALPACA_LIVE_MODE=true (plus live ALPACA_API_KEY/SECRET).
 ALPACA_LIVE_MODE  = os.getenv("ALPACA_LIVE_MODE", "false").lower() == "true"
 
 # ── Universe ──────────────────────────────────────────────────────────────────

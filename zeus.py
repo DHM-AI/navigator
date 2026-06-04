@@ -111,7 +111,7 @@ alpaca_ok        = False
 
 try:
     from execution.alpaca import is_configured, is_live_mode, get_account, get_positions
-    from config import ALPACA_API_KEY, ALPACA_SECRET_KEY, ALPACA_BASE_URL, ALPACA_LIVE_MODE
+    from config import ALPACA_API_KEY, ALPACA_SECRET_KEY, ALPACA_LIVE_MODE
 
     if is_configured():
         alpaca_acct      = get_account()
