@@ -219,15 +219,18 @@ LOSS_COOLDOWN_HOURS    = 48     # block re-entry for 2 trading days
 # exit cleanly. Skip them entirely.
 MIN_STOCK_PRICE        = 5.00   # below this → skip the pick
 
-# ── Weekend-gap protection (added 2026-06-01) ─────────────────────────────────
-# A stop loss CANNOT protect against a weekend gap-down: the stock opens Monday
-# far below Friday's close and the stop fills well past its trigger. On 2026-06-01
-# HOOD (-$539) and WOLF (-$554) were both bought Fri 2:09 PM and gapped through
-# their ~3% stops to ~7% losses. Don't open NEW positions late Friday — take the
-# same setup Monday morning when stops actually work. Existing positions are
-# unaffected; AEGIS still manages their trailing stops over the weekend.
-BLOCK_FRIDAY_PM_ENTRIES = True   # set False to allow Friday-afternoon entries
-FRIDAY_ENTRY_CUTOFF_ET  = 14.0   # block new entries after 2:00 PM ET on Fridays
+# ── Weekend-gap protection ────────────────────────────────────────────────────
+# Originally blocked Friday PM entries (after 2 PM) to prevent weekend gap risk:
+# HOOD (-$539) and WOLF (-$554) were bought Fri 2:09 PM, gapped through stops
+# over the weekend. Rule made sense for SWING trades that hold overnight.
+#
+# Disabled 2026-06-05: with FORCE_DAY_TRADES=True, DUSK closes ALL positions
+# at 3:50 PM — including Friday. A trade opened at 2:30 PM Friday is GONE by
+# 3:50 PM Friday. No weekend exposure at all. Blocking Friday PM entries now
+# just wastes the 2 PM and 3 PM scan windows for no reason.
+# Restore to True if swing mode is ever re-enabled.
+BLOCK_FRIDAY_PM_ENTRIES = False  # day trades close by 3:50 PM — no weekend gap
+FRIDAY_ENTRY_CUTOFF_ET  = 14.0   # (cutoff preserved for when swing is re-enabled)
 
 # ── Max entries per ticker (added 2026-06-01) ─────────────────────────────────
 # Stops the "accumulate into a loser" pattern. On 2026-06-01 ON was bought 5×
