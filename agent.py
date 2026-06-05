@@ -190,6 +190,15 @@ def _execute_trades(picks_df: pd.DataFrame, explanations: dict,
         direction = row.get("direction", "bullish")
         dollar    = row.get("dollar_amount", 0)
         duration  = row.get("duration", "")
+        # FORCE_DAY_TRADES: override every signal to day-trade mode so DUSK closes
+        # it by 3:50 PM ET — zero overnight exposure. Bracket uses tighter params
+        # (-1.5% stop / +3% TP). Data: 68% wr / +$92/trade vs swing 58% / -$13.
+        try:
+            from config import FORCE_DAY_TRADES as _fdt
+        except ImportError:
+            _fdt = False
+        if _fdt:
+            duration = "1d (day trade)"
         _cd_msg   = None   # reset each iteration — prevents leak from prior ticker (C-1 audit fix)
         if dollar <= 0:
             _record_block(ticker, "Kelly sizing returned $0 — no position size allocated")

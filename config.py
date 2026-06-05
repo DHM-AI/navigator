@@ -105,9 +105,16 @@ MOVE_TARGET_PCT     = 0.20   # 20% ceiling TP — trailing stops handle normal e
 # ── Day trade bracket parameters (tighter than swing) ────────────────────────
 # PAUSED 2026-06-02: DAY trades (added 5/29) were one of three changes during the
 # +$7.6k→-$5.1k swing; no standalone validation. Off until validated separately.
-ENABLE_DAY_TRADES    = False  # when False, day-trade setups use the normal swing bracket
+ENABLE_DAY_TRADES    = True   # classifier active — signals can be tagged "1d (day trade)"
 DAY_TRADE_STOP_PCT   = 0.015  # -1.5% stop (tighter than swing's -3%)
 DAY_TRADE_TARGET_PCT = 0.03   # +3% take profit (quick win, closed by DUSK at 3:50 PM)
+
+# FORCE_DAY_TRADES: when True, EVERY new position is treated as a day trade —
+# tighter bracket (-1.5% / +3%), DAY TIF, closed by DUSK at 3:50 PM ET.
+# Zero overnight exposure. Data showed day-trade style: 68% wr / +$92/trade
+# vs swing: 58% wr / -$13/trade (Renato 2026-06-05). Flip to False to restore
+# swing mode. ENABLE_DAY_TRADES must also be True for classifier to fire.
+FORCE_DAY_TRADES     = True
 
 # ── Volatility filter + ATR-based stops (added 2026-06-02) ───────────────────
 # Backtest of 42 real stop-outs (6/2): the flat -3% swing stop sits INSIDE one
