@@ -579,6 +579,16 @@ def run_scan(send_email: bool = True,
         rows = picks_df.copy()
         rows["date"] = today
         rows["actual_move_5d"] = None
+        # FORCE_DAY_TRADES: persist duration as "1d (day trade)" so the SAVED
+        # prediction matches how it actually trades — dashboard shows DAY (not
+        # SWING) and DUSK reads "1d" and closes it at 3:50 PM. Without this the
+        # scorer's "5-7d" leaks into the DB even though the bracket is day-trade.
+        try:
+            from config import FORCE_DAY_TRADES as _fdt
+        except ImportError:
+            _fdt = False
+        if _fdt and "duration" in rows.columns:
+            rows["duration"] = "1d (day trade)"
         db.append_predictions(rows.to_dict(orient="records"))
         print(f"      Saved {len(rows)} predictions to Supabase")
 

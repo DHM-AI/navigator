@@ -79,6 +79,10 @@ def run() -> list[dict]:
     to_hold  = []
 
     from data.universe import is_crypto
+    try:
+        from config import FORCE_DAY_TRADES
+    except ImportError:
+        FORCE_DAY_TRADES = False
     for p in positions:
         ticker   = p["ticker"]
         duration = duration_map.get(ticker, "")
@@ -91,8 +95,13 @@ def run() -> list[dict]:
         if ticker not in todays_entries:
             # Opened on a previous day — hold until its natural exit
             to_hold.append((p, f"prev day ({duration})"))
-        elif _is_eod_close(duration):
-            # Genuinely 1-day trade — close at EOD
+        elif FORCE_DAY_TRADES or _is_eod_close(duration):
+            # FORCE_DAY_TRADES: close EVERY position opened today — NO overnight
+            # holds in day-trade mode. Critical: the duration override happens at
+            # execution, so the SAVED prediction may still say "5-7d" — without
+            # this, DUSK would skip these and leave tight-stop positions exposed
+            # to overnight gaps (Renato 2026-06-05). Otherwise: only true 1-day
+            # trades close at EOD.
             to_close.append(p)
         else:
             # Opened today but holds 2d, 3d, 5-7d etc — respect its duration
