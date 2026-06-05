@@ -162,7 +162,7 @@ KELLY_FRACTION    = 0.5    # use half-Kelly for safety
 # COUNT shrink. To return to full size after live validation: set CANARY_MODE =
 # False (one line) and everything reverts to the full values below.
 CANARY_MODE               = True
-CANARY_MAX_POSITION_PCT   = 0.02   # ~$500/trade on a $25k account
+CANARY_MAX_POSITION_PCT   = 0.04   # ~$1,000/trade on a $25k account (raised 2%→4%, Renato 2026-06-05)
 CANARY_MAX_OPEN_POSITIONS = 5      # up to 5 concurrent (raised 3→5, Renato 2026-06-05)
 CANARY_MAX_DAILY_TRADES   = 10     # day-trade turnover (raised 4→10, Renato 2026-06-05)
 FULL_MAX_POSITION_PCT     = 0.08   # 8% per trade (rebased to real account, Option 3)
