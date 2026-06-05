@@ -122,11 +122,29 @@ def check_trade(
             if now_et.weekday() == 4 and et_hour_frac >= FRIDAY_ENTRY_CUTOFF_ET:
                 return False, (
                     f"Friday {now_et.strftime('%H:%M')} ET — no new entries after "
-                    f"{FRIDAY_ENTRY_CUTOFF_ET:.0f}:00 ET (weekend-gap protection). "
-                    f"Stops can't cover a Monday gap; take this setup Monday AM."
+                    f"{FRIDAY_ENTRY_CUTOFF_ET:.0f}:00 ET (Friday-afternoon chop / weekend gap). "
+                    f"Take this setup next session."
                 )
     except Exception as e:
         print(f"[THEMIS] Friday-entry check failed for {ticker}: {e} — allowing trade")
+
+    # ── Check 1a2b: General end-of-day entry cutoff (ALL days) ────────────────
+    # No new positions after NO_ENTRY_AFTER_ET. Day trades need room to work
+    # before DUSK closes at 3:50 PM, and any entry after DUSK orphans overnight
+    # (FPS opened 3:58 PM Fri AFTER DUSK → stuck overnight, Renato 2026-06-05).
+    # Entries stop at 3:30, DUSK closes at 3:50 → no orphan window.
+    try:
+        from config import NO_ENTRY_AFTER_ET
+        from zoneinfo import ZoneInfo
+        _now_et = datetime.now(ZoneInfo("America/New_York"))
+        if (_now_et.hour + _now_et.minute / 60.0) >= NO_ENTRY_AFTER_ET:
+            return False, (
+                f"{_now_et.strftime('%H:%M')} ET — past the {NO_ENTRY_AFTER_ET:.2f} "
+                f"entry cutoff. No new positions this close to DUSK (would orphan "
+                f"overnight). Next session."
+            )
+    except Exception as e:
+        print(f"[THEMIS] EOD-cutoff check failed for {ticker}: {e} — allowing trade")
 
     # ── Check 1a3: Max entries per ticker (anti-accumulation) ─────────────────
     # The duplicate check (Check 1) relies on the in-memory open_positions list,
