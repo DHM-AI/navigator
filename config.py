@@ -229,14 +229,14 @@ MIN_STOCK_PRICE        = 5.00   # below this → skip the pick
 # 3:50 PM Friday. No weekend exposure at all. Blocking Friday PM entries now
 # just wastes the 2 PM and 3 PM scan windows for no reason.
 # Restore to True if swing mode is ever re-enabled.
-BLOCK_FRIDAY_PM_ENTRIES = True   # no Friday-afternoon entries (choppy/low-vol; Renato 2026-06-05)
-FRIDAY_ENTRY_CUTOFF_ET  = 12.0   # Friday: no new entries after 12:00 PM ET (noon)
-
-# General end-of-day entry cutoff (ALL days). No new positions after this — day
-# trades need time to work before DUSK closes at 3:50 PM, and entries after DUSK
-# orphan overnight (FPS opened 3:58 PM Fri, after DUSK had closed → stuck overnight,
-# Renato 2026-06-05). Entries stop at 3:30, DUSK closes at 3:50: no orphan window.
+# Single, uniform entry cutoff for EVERY day: no new positions after 3:30 PM ET
+# (Renato 2026-06-05: "3:30 every day"). Day trades need room to work before DUSK
+# closes at 3:50; entries after DUSK orphan overnight (FPS opened 3:58 PM →
+# stranded). Entries stop 3:30, DUSK closes 3:50 → no orphan window. No special
+# Friday rule — all weekdays identical.
 NO_ENTRY_AFTER_ET       = 15.5   # 3:30 PM ET — last entry of the day (all weekdays)
+BLOCK_FRIDAY_PM_ENTRIES = False  # Friday treated like any other day (3:30 cutoff applies)
+FRIDAY_ENTRY_CUTOFF_ET  = 14.0   # unused while BLOCK_FRIDAY_PM_ENTRIES=False
 
 # ── Max entries per ticker (added 2026-06-01) ─────────────────────────────────
 # Stops the "accumulate into a loser" pattern. On 2026-06-01 ON was bought 5×
