@@ -424,7 +424,13 @@ def place_order(ticker: str, dollar_amount: float, direction: str,
             symbol         = ticker,
             qty            = qty,
             side           = OrderSide.BUY if side == "buy" else OrderSide.SELL,
-            time_in_force  = TimeInForce.DAY,   # Alpaca requires DAY for bracket orders
+            # Swing brackets MUST be GTC so the stop + take-profit PERSIST overnight
+            # and across the multi-day hold. DAY brackets expired at every close →
+            # the position went naked overnight and AEGIS had to reactively re-protect
+            # it AFTER the fact (root cause of PURR's −$217 stuck stop, 2026-06-04).
+            # Day-trades stay DAY (DUSK closes them same session). Alpaca allows
+            # day|gtc for brackets, and AEGIS already uses GTC stops successfully.
+            time_in_force  = TimeInForce.DAY if _is_day_trade else TimeInForce.GTC,
             order_class    = OrderClass.BRACKET,
             take_profit    = TakeProfitRequest(limit_price=limit_price),
             stop_loss      = StopLossRequest(stop_price=stop_price),
@@ -489,7 +495,7 @@ def place_order(ticker: str, dollar_amount: float, direction: str,
                         symbol        = ticker,
                         qty           = qty,
                         side          = OrderSide.BUY if side == "buy" else OrderSide.SELL,
-                        time_in_force = TimeInForce.DAY,
+                        time_in_force = TimeInForce.DAY if _is_day_trade else TimeInForce.GTC,  # GTC: stop persists overnight (swing)
                         order_class   = OrderClass.BRACKET,
                         take_profit   = TakeProfitRequest(limit_price=limit_price),
                         stop_loss     = StopLossRequest(stop_price=stop_price),
