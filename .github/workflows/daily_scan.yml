@@ -4,19 +4,22 @@ on:
   schedule:
     # All times in UTC. Market hours ET = UTC-4 (EDT, summer) / UTC-5 (EST, winter)
     # Currently EDT (UTC-4):
-    # ── Primary triggers (every hour during market hours) ──────────────
+    # ── Primary triggers (day-trade optimized, 2026-06-05) ──────────────
+    # Removed: 3:30 PM (only 20 min before DUSK, too late for day trades)
+    #          4:00 PM (market closed, useless for day trades)
+    # Added:   10:00 AM (fills the 9:30-10:30 opening-hour gap — highest
+    #                    volume/momentum window of the day)
     - cron: '0 11 * * 1-5'    #  7:00 AM ET — pre-market open
     - cron: '0 12 * * 1-5'    #  8:00 AM ET — pre-market momentum
     - cron: '0 13 * * 1-5'    #  9:00 AM ET — market just opened
     - cron: '30 13 * * 1-5'   #  9:30 AM ET — exact market open
+    - cron: '0 14 * * 1-5'    # 10:00 AM ET — opening-hour momentum ← NEW
     - cron: '30 14 * * 1-5'   # 10:30 AM ET — mid-morning momentum
     - cron: '0 15 * * 1-5'    # 11:00 AM ET — late morning
     - cron: '0 16 * * 1-5'    # 12:00 PM ET — midday
     - cron: '0 17 * * 1-5'    #  1:00 PM ET — early afternoon
     - cron: '0 18 * * 1-5'    #  2:00 PM ET — afternoon
-    - cron: '0 19 * * 1-5'    #  3:00 PM ET — pre-power hour
-    - cron: '30 19 * * 1-5'   #  3:30 PM ET — power hour
-    - cron: '0 20 * * 1-5'    #  4:00 PM ET — after-hours check
+    - cron: '0 19 * * 1-5'    #  3:00 PM ET — last useful entry (DUSK at 3:50)
     # Note: ORACLE (10 PM ET) is now owned exclusively by oracle.yml — removed from here to prevent double-run
     # ── 30-min fallback triggers (catch GitHub cron delays) ────────────
     # GitHub's cron scheduler can lag 30-120 min. These run 30 min after
