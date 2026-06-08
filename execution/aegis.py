@@ -988,6 +988,10 @@ def safety_sweep() -> list:
     def _ot(o):
         return str(getattr(o, "order_type", "") or getattr(o, "type", "")).lower()
 
+    def _tif(o):
+        # normalize "TimeInForce.DAY" / "day" → "day"
+        return str(getattr(o, "time_in_force", "")).split(".")[-1].lower()
+
     actions = []
     try:
         client = _get_client()
@@ -997,9 +1001,40 @@ def safety_sweep() -> list:
             return actions
 
         stops_by_sym = {}
+        all_active_by_sym = {}   # all resting legs per symbol (for DAY→GTC: free every leg)
         for o in client.get_orders(GetOrdersRequest(status=QueryOrderStatus.ALL, limit=500)):
-            if is_active_order(o) and ("stop" in _ot(o) or "trail" in _ot(o)):
+            if not is_active_order(o):
+                continue
+            all_active_by_sym.setdefault(o.symbol, []).append(o)
+            if "stop" in _ot(o) or "trail" in _ot(o):
                 stops_by_sym.setdefault(o.symbol, []).append(o)
+
+        # Which symbols will DUSK close at EOD today? Their DAY-TIF stops are
+        # intentional (DUSK closes them before the close). For every OTHER
+        # (swing) position, a DAY stop would expire at 4 PM and strand it naked
+        # overnight, so it must be GTC. Mirror DUSK's own classification exactly
+        # so the two never drift. (2026-06-08 safeguard.)
+        try:
+            from config import FORCE_DAY_TRADES as _FDT, ENABLE_DAY_TRADES as _EDT
+        except Exception:
+            _FDT, _EDT = False, False
+        if _FDT:
+            def _dusk_closes(_sym):
+                return True                      # FORCE_DAY_TRADES → DUSK closes everything today
+        elif not _EDT:
+            def _dusk_closes(_sym):
+                return False                     # pure swing → nothing is a day trade
+        else:
+            try:                                 # mixed mode → only genuine day-trades close
+                from close_intraday import (_get_todays_entries as _gte,
+                                            _get_duration_map as _gdm,
+                                            _is_eod_close as _iec)
+                _te = _gte(); _dm = _gdm(_te)
+                def _dusk_closes(_sym):
+                    return _sym in _te and _iec(_dm.get(_sym, ""))
+            except Exception:
+                def _dusk_closes(_sym):
+                    return False                 # unknown → treat as swing (convert to GTC = safe)
 
         trigger_pct = TRAIL_TRIGGER_PCT * 100   # config stores a decimal
         for p in positions:
@@ -1059,7 +1094,47 @@ def safety_sweep() -> list:
                         _alert_naked(e2)
                 continue
 
-            # (3) Below trigger and NAKED — place a protective fixed stop.
+            # (3) Has a fixed stop, but it's DAY-TIF on a position DUSK will NOT
+            #     close today → the DAY stop expires at the 4 PM close and the
+            #     position rides overnight NAKED. Convert it to a GTC stop.
+            #     (2026-06-08: NTAP was opened as a day-trade in the morning, then
+            #     re-scored to swing after the mid-day strategy revert — a DAY stop
+            #     on a swing-duration position is the exact naked-overnight combo.)
+            if has_fixed and not _dusk_closes(sym):
+                day_fixed = [o for o in sym_stops
+                             if "stop" in _ot(o) and "trail" not in _ot(o) and _tif(o) == "day"]
+                if day_fixed:
+                    keep_sp = None
+                    for o in day_fixed:
+                        try: keep_sp = float(getattr(o, "stop_price", 0) or 0) or keep_sp
+                        except Exception: pass
+                    # Free ALL the position's resting legs (the DAY stop + any
+                    # day-trade TP limit still holding the qty) before placing the
+                    # GTC stop — otherwise the new stop is rejected (held_for_orders),
+                    # the same qty-conflict that bit the crypto path.
+                    for o in all_active_by_sym.get(sym, []):
+                        try: client.cancel_order_by_id(str(o.id))
+                        except Exception: pass
+                    gtc_sp = keep_sp or (round(cur * (1 - KELLY_LOSS_PCT), 2) if is_long
+                                         else round(cur * (1 + KELLY_LOSS_PCT), 2))
+                    try:
+                        client.submit_order(StopOrderRequest(
+                            symbol=sym, qty=qty, side=close_side,
+                            time_in_force=TimeInForce.GTC, stop_price=gtc_sp))
+                        print(f"[SWEEP] {sym} DAY stop → GTC @ ${gtc_sp} "
+                              f"(swing position; a DAY stop would expire at the close)")
+                        actions.append({"ticker": sym, "action": "sweep_day_to_gtc", "stop": gtc_sp})
+                    except Exception as e:
+                        try:                       # never leave it naked
+                            sp = _place_fixed_fallback()
+                            print(f"[SWEEP] {sym} DAY→GTC primary failed ({str(e)[:50]}); "
+                                  f"fallback GTC stop @ ${sp}")
+                            actions.append({"ticker": sym, "action": "sweep_day_to_gtc_fallback", "stop": sp})
+                        except Exception as e2:
+                            _alert_naked(e2)
+                    continue
+
+            # (4) Below trigger and NAKED — place a protective fixed stop.
             if not has_fixed:
                 try:
                     sp = _place_fixed_fallback()
