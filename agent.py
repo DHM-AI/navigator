@@ -292,14 +292,17 @@ def _execute_trades(picks_df: pd.DataFrame, explanations: dict,
         try:
             from config import COOLDOWN_WIN_THRESHOLD, COOLDOWN_HOURS
             from execution.alpaca import get_closed_trade_pnl
-            from datetime import datetime as _dt, timedelta as _td
+            from datetime import datetime as _dt, timedelta as _td, timezone as _tz
             _recent = get_closed_trade_pnl(days=2)
-            _cutoff = _dt.now() - _td(hours=COOLDOWN_HOURS)
+            # UTC everywhere: closed_at is UTC; bare _dt.now() is LOCAL (Mountain on
+            # the Mac launchd), which skewed this cooldown window by ~6-7h once scans
+            # moved to local execution. (audit 2026-06-08)
+            _cutoff = _dt.now(_tz.utc) - _td(hours=COOLDOWN_HOURS)
             for _ct in _recent:
                 if _ct["ticker"] != ticker:
                     continue
                 try:
-                    _closed_at = _dt.strptime(_ct["closed_at"][:16], "%Y-%m-%d %H:%M")
+                    _closed_at = _dt.strptime(_ct["closed_at"][:16], "%Y-%m-%d %H:%M").replace(tzinfo=_tz.utc)
                 except Exception:
                     continue
                 if _closed_at < _cutoff:
@@ -318,14 +321,14 @@ def _execute_trades(picks_df: pd.DataFrame, explanations: dict,
                     _prior_long = _ct["realized_pnl"] > 0   # legacy fallback
                 _cur_bearish = direction == "bearish"
                 if _prior_long and _cur_bearish and _prior_pct > 0:
-                    _hrs = int(((_dt.now()-_closed_at).total_seconds()/3600))
+                    _hrs = int(((_dt.now(_tz.utc)-_closed_at).total_seconds()/3600))
                     _cd_msg = (f"Cooldown — closed long +{_prior_pct:.1%} {_hrs}h ago, "
                                f"blocking bearish signal for {COOLDOWN_HOURS}h")
                     print(f"  {ticker}: COOLDOWN — {_cd_msg}")
                     dollar = 0  # skip this trade
                     break
                 if not _prior_long and not _cur_bearish and _prior_pct > 0:
-                    _hrs = int(((_dt.now()-_closed_at).total_seconds()/3600))
+                    _hrs = int(((_dt.now(_tz.utc)-_closed_at).total_seconds()/3600))
                     _cd_msg = (f"Cooldown — closed short +{_prior_pct:.1%} {_hrs}h ago, "
                                f"blocking bullish signal for {COOLDOWN_HOURS}h")
                     print(f"  {ticker}: COOLDOWN — {_cd_msg}")

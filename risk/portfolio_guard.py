@@ -281,6 +281,14 @@ def check_trade(
             closed_at = t.get("closed_at", "")
             try:
                 ct = datetime.fromisoformat(closed_at.replace("Z", "+00:00"))
+                # Supabase stores UTC timestamps WITHOUT a tz offset (naive, e.g.
+                # "2026-06-04 14:59:38"). Subtracting a naive ct from the aware
+                # now_ts raises "can't subtract offset-naive and offset-aware
+                # datetimes" — which fail-closes the WHOLE check and blocks re-entry
+                # for EVERY name with a recent close (the AMD bug, 2026-06-05).
+                # Treat naive timestamps as UTC (that's what the writer used).
+                if ct.tzinfo is None:
+                    ct = ct.replace(tzinfo=timezone.utc)
             except Exception:
                 continue
             hours_since = (now_ts - ct).total_seconds() / 3600
