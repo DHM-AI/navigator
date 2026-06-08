@@ -28,11 +28,27 @@ OPT_DTE_MAX    = 45              # max days-to-expiration
 OPT_TARGET_DELTA = 0.45          # used only when greeks available; else ATM moneyness
 
 # --- Risk / sizing -------------------------------------------------------------
-OPT_MAX_PREMIUM_PCT = 0.02       # max premium per trade as a fraction of bankroll
+OPT_MAX_PREMIUM_PCT = 0.03       # max premium per trade as a fraction of bankroll
+                                 # (raised 2%->3% on 2026-06-08 so 1 contract of pricier
+                                 #  high-conviction names like AMD/NVDA fits — at 2% the
+                                 #  only signal, AMD, was blocked by ~$116 and it sat idle)
 OPT_MAX_OPEN = 3                 # max concurrent open option positions
 
 # --- Strategy ------------------------------------------------------------------
 OPT_STRATEGY = "long_option"     # simplest defined-risk: buy a call (bullish) / put (bearish)
+
+# --- Exit management -----------------------------------------------------------
+# A long option with no exit rots to zero on theta. These drive active exits in
+# manage_options(): take-profit and stop are measured against the PREMIUM PAID
+# (not the underlying), and the time-exit closes before the gamma/theta cliff.
+OPT_TP_PCT   = 0.50              # take-profit: close at +50% gain on premium paid
+OPT_STOP_PCT = 0.50             # stop: close at -50% loss on premium paid
+OPT_EXIT_DTE = 21               # time-exit: close when <= 21 calendar days to expiration
+
+# --- Entry-window reuse (carry over equity entry lessons) ----------------------
+# When True, run_options_scan reuses the equity entry-window + Friday-PM guards
+# (no open-chop entries, no end-of-day entries, no Friday-afternoon entries).
+OPT_RESPECT_EQUITY_WINDOW = True
 
 # --- Backtest / pricing assumptions -------------------------------------------
 OPT_IV_ASSUMPTION = 0.30         # implied-vol assumption for the BS-approx backtest
