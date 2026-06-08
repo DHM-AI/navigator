@@ -535,7 +535,11 @@ def place_order(ticker: str, dollar_amount: float, direction: str,
         )
         if _recoverable:
             print(f"[APEX] Bracket failed ({e}) — recoverable, falling back to simple order.")
-            return _place_simple_order(ticker, dollar_amount, side, mode, reason)
+            # Finding #11 (2026-06-08): pass atr_pct/is_day_trade so the simple
+            # order can attach a standalone stop at the SAME intended level the
+            # bracket would have used.
+            return _place_simple_order(ticker, dollar_amount, side, mode, reason,
+                                       atr_pct=atr_pct, is_day_trade=_is_day_trade)
         # Non-recoverable — refuse and alert
         print(f"[APEX] Bracket failed ({e}) — NOT falling back (would create naked position).")
         try:
@@ -552,11 +556,19 @@ def place_order(ticker: str, dollar_amount: float, direction: str,
 
 
 def _place_simple_order(ticker: str, dollar_amount: float, side: str,
-                         mode: str, reason: str) -> dict:
+                         mode: str, reason: str,
+                         atr_pct: float = 0.0, is_day_trade: bool = False) -> dict:
     """Fallback: plain market order without bracket (futures, etc.)
 
     For SELL (short) orders we always use qty — Alpaca rejects notional shorts.
     For BUY orders we prefer notional, fall back to qty if needed.
+
+    Finding #11 (2026-06-08): after the market order, this now attempts to attach
+    a STANDALONE protective stop (GTC) at the same intended stop level a bracket
+    would have used (_resolve_stop_and_size). If the stop is attached the status
+    is the normal "submitted"; if no stop could be placed the status is the
+    DISTINCT "submitted_unprotected" so the caller can fire a loud, separate
+    alert (the position is naked until the next AEGIS run re-protects it).
     """
     # CRITICAL audit C-10: daily-loss kill switch was only checked in place_order.
     # Fallback paths bypassed it — bracket failure could keep bleeding capital
@@ -594,11 +606,50 @@ def _place_simple_order(ticker: str, dollar_amount: float, side: str,
             )
 
         order  = client.submit_order(order_req)
-        actual_qty = qty or round(dollar_amount / (get_current_price(ticker) or 1))
+        _entry_price = get_current_price(ticker)
+        actual_qty = qty or round(dollar_amount / (_entry_price or 1))
+
+        # Finding #11 (2026-06-08): this market order is NAKED. Immediately try
+        # to attach a standalone protective stop (GTC) at the intended stop
+        # level — the same level a bracket would have used. Default status stays
+        # "submitted" only if that stop actually lands; otherwise we return the
+        # DISTINCT "submitted_unprotected" so the operator gets a clear signal
+        # (the prior code always returned "submitted", masking naked positions).
+        _stop_status = "submitted_unprotected"
+        _stop_price = None
+        try:
+            if _entry_price and _entry_price > 0 and actual_qty and actual_qty >= 1:
+                _sl_pct, _ = _resolve_stop_and_size(
+                    dollar_amount, atr_pct, is_day_trade, ticker)
+                if side == "buy":
+                    _stop_price = round(_entry_price * (1 - _sl_pct), 2)
+                    _stop_side  = OrderSide.SELL
+                else:
+                    _stop_price = round(_entry_price * (1 + _sl_pct), 2)
+                    _stop_side  = OrderSide.BUY
+                from alpaca.trading.requests import StopOrderRequest
+                client.submit_order(StopOrderRequest(
+                    symbol        = ticker,
+                    qty           = int(actual_qty),
+                    side          = _stop_side,
+                    time_in_force = TimeInForce.GTC,
+                    stop_price    = _stop_price,
+                ))
+                _stop_status = "submitted"
+                print(f"[APEX] {ticker} simple-order stop attached @ ${_stop_price:.2f} "
+                      f"({_sl_pct*100:.1f}% risk)")
+            else:
+                print(f"[APEX] {ticker} simple-order: cannot size a stop "
+                      f"(price={_entry_price}, qty={actual_qty}) — UNPROTECTED")
+        except Exception as _se:
+            print(f"[APEX] {ticker} simple-order stop FAILED ({_se}) — UNPROTECTED, "
+                  f"AEGIS will attempt to protect it")
+
         result = {
-            "status": "submitted", "order_id": str(order.id),
+            "status": _stop_status, "order_id": str(order.id),
             "ticker": ticker, "side": side,
             "qty": actual_qty,
+            "stop_loss": _stop_price,
             "dollar_amount": dollar_amount, "mode": mode,
             "timestamp": datetime.now().isoformat(), "reason": reason,
         }
@@ -1089,7 +1140,8 @@ def place_crypto_order(alpaca_symbol: str, dollar_amount: float,
 
     - alpaca_symbol: Alpaca format e.g. "BTC/USD"
     - Crypto uses GTC (not DAY) — markets are 24/7
-    - No bracket orders for crypto — places separate stop + limit orders after fill
+    - No bracket/OCO for crypto on this account — places ONLY a stop-loss after
+      fill; AEGIS trails and manages the upside/target on all positions.
     - Fractional crypto always supported (uses notional dollar amount)
 
     Audit 2026-06-02: crypto now goes through the SAME risk envelope as equities —
@@ -1121,7 +1173,9 @@ def place_crypto_order(alpaca_symbol: str, dollar_amount: float,
     side = "buy" if direction in ("bullish", "long") else "sell"
 
     try:
-        from alpaca.trading.requests import MarketOrderRequest, StopOrderRequest, LimitOrderRequest
+        # Finding #10 (2026-06-08): TP LimitOrderRequest removed — crypto gets a
+        # stop-loss ONLY; AEGIS manages the target. No conflicting second leg.
+        from alpaca.trading.requests import MarketOrderRequest, StopOrderRequest
         from alpaca.trading.enums import OrderSide, TimeInForce
 
         client    = _get_client()
@@ -1142,38 +1196,39 @@ def place_crypto_order(alpaca_symbol: str, dollar_amount: float,
             dc    = CryptoHistoricalDataClient(ALPACA_API_KEY, ALPACA_SECRET_KEY)
             quote = dc.get_crypto_latest_quote(CryptoLatestQuoteRequest(symbol_or_symbols=alpaca_symbol))
             price = float(quote[alpaca_symbol].ask_price)
-            # Audit C1: protective orders sized to the POSITION qty (was full
-            # notional on BOTH legs — two full-size resting sells could exceed
-            # the held position). Round qty to 6dp (crypto is fractional).
+            # Stop loss is sized to the POSITION qty (qty-based, not notional).
+            # Round qty to 6dp (crypto is fractional).
             qty   = round(dollar_amount / price, 6) if price else 0
 
+            # Finding #10 (2026-06-08): place ONLY the stop-loss. The previous
+            # code also submitted a full-qty TP LimitOrderRequest; with the stop
+            # already holding 100% of the position, Alpaca rejected the second
+            # leg (held_for_orders / insufficient qty). That rejection fell into
+            # the except below and FORCE-CLOSED a healthy just-opened position
+            # (entries opened then immediately auto-closed, paying spread both
+            # ways). Stop-only is the safe default; AEGIS trails + manages the
+            # target/upside on every position.
             if side == "buy":
                 sl_price = round(price * (1 - _sl_pct), 2)
-                tp_price = round(price * (1 + MOVE_TARGET_PCT), 2)
                 sl_side  = OrderSide.SELL
-                tp_side  = OrderSide.SELL
             else:
                 sl_price = round(price * (1 + _sl_pct), 2)
-                tp_price = round(price * (1 - MOVE_TARGET_PCT), 2)
                 sl_side  = OrderSide.BUY
-                tp_side  = OrderSide.BUY
 
             if qty <= 0:
                 raise ValueError(f"computed qty {qty} <= 0 (price={price})")
-            # Stop loss (qty-based, not notional)
+            # Stop loss (qty-based, not notional) — the ONLY resting protective leg
             client.submit_order(StopOrderRequest(
                 symbol=alpaca_symbol, qty=qty,
                 side=sl_side, time_in_force=TimeInForce.GTC, stop_price=sl_price))
-            # Take profit (qty-based)
-            client.submit_order(LimitOrderRequest(
-                symbol=alpaca_symbol, qty=qty,
-                side=tp_side, time_in_force=TimeInForce.GTC, limit_price=tp_price))
-            print(f"         SL: ${sl_price:.2f} ({_sl_pct*100:.1f}%)  TP: ${tp_price:.2f}  qty={qty}")
+            print(f"         SL: ${sl_price:.2f} ({_sl_pct*100:.1f}%)  qty={qty}  (TP managed by AEGIS)")
         except Exception as pe:
-            # Audit C2: FAIL CLOSED — never leave a filled crypto position naked.
-            # Previously this printed a warning and returned "submitted". Now we
-            # alert loudly AND close the just-opened position.
-            print(f"[APEX] 🚨 Crypto SL/TP placement FAILED for {alpaca_symbol}: {pe} — closing to avoid naked position")
+            # Finding #10 (2026-06-08): this except now only triggers on a REAL
+            # protection failure (the stop itself could not be placed), not on a
+            # benign TP rejection that no longer exists. FAIL CLOSED — never
+            # leave a filled crypto position naked: alert loudly AND close the
+            # just-opened position.
+            print(f"[APEX] 🚨 Crypto stop-loss placement FAILED for {alpaca_symbol}: {pe} — closing to avoid naked position")
             _closed_ok = False
             try:
                 _cl = close_position(alpaca_symbol)
@@ -1184,7 +1239,7 @@ def place_crypto_order(alpaca_symbol: str, dollar_amount: float,
                 from alerts.slack import _post
                 _post({"text": (
                     f"🚨 *APEX crypto naked-position guard* — {alpaca_symbol} {side.upper()} "
-                    f"filled but stop/TP FAILED ({str(pe)[:80]}). "
+                    f"filled but STOP-LOSS FAILED ({str(pe)[:80]}). "
                     f"{'Position auto-closed.' if _closed_ok else '⚠️ AUTO-CLOSE ALSO FAILED — CHECK MANUALLY NOW.'}"
                 )})
             except Exception:

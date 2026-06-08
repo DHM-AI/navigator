@@ -9,7 +9,7 @@ from signals.sentiment import normalize_score
 from signals.scorer import score_universe as rule_score_universe
 from config import (
     MODEL_PATH, FEATURE_NAMES_PATH, CALIBRATOR_PATH, ENABLE_CALIBRATION,
-    XGB_WEIGHT, SENTIMENT_WEIGHT, MIN_SCORE_TO_ALERT,
+    XGB_WEIGHT, SENTIMENT_WEIGHT, MIN_SCORE_TO_ALERT, MIN_PRICE,
 )
 
 _model = None
@@ -150,6 +150,17 @@ def predict_universe(
 
             if df is None or df.empty:
                 continue
+
+            # Finding #24 (2026-06-08): mirror score_universe's penny-stock skip on
+            # the LIVE model path. score_universe skips sub-$MIN_PRICE names but the
+            # live agent runs predict_universe, which had no such filter — junk got
+            # scored/ranked and could eat a TOP_N slot. Skip BEFORE the expensive
+            # _xgb_prob/model work. (Hard exec gate in alpaca.py is the 2nd layer.)
+            try:
+                if float(df["Close"].iloc[-1]) < MIN_PRICE:
+                    continue
+            except Exception:
+                pass
 
             # Get XGB probability (0-1)
             xgb_prob = _xgb_prob(df)

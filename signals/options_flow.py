@@ -253,45 +253,7 @@ def enrich_with_options(picks_df: pd.DataFrame, verbose: bool = True) -> pd.Data
 
     return picks_df.sort_values("score", ascending=False).reset_index(drop=True)
 
-
-def get_short_interest(ticker: str) -> dict:
-    """
-    Fetch short interest data from yfinance .info.
-    Free, but slow (1-2s per ticker). Only run for top picks.
-
-    Returns:
-        {
-            "short_pct_float":  float,    # % of float sold short
-            "short_ratio":      float,    # days to cover
-            "squeeze_setup":    bool,     # high short + bullish momentum
-            "detail":           str,
-        }
-    """
-    try:
-        info = yf.Ticker(ticker).info
-        short_pct   = float(info.get("shortPercentOfFloat", 0) or 0) * 100
-        short_ratio = float(info.get("shortRatio", 0) or 0)
-
-        squeeze_setup = short_pct > 15 and short_ratio > 3
-
-        detail_parts = []
-        if short_pct > 0:
-            detail_parts.append(f"{short_pct:.1f}% float short")
-        if short_ratio > 0:
-            detail_parts.append(f"{short_ratio:.1f}d to cover")
-        if squeeze_setup:
-            detail_parts.append("⚡ squeeze candidate")
-
-        return {
-            "short_pct_float": round(short_pct, 2),
-            "short_ratio":     round(short_ratio, 2),
-            "squeeze_setup":   squeeze_setup,
-            "detail":          " · ".join(detail_parts) or "no data",
-        }
-    except Exception:
-        return {
-            "short_pct_float": 0.0,
-            "short_ratio":     0.0,
-            "squeeze_setup":   False,
-            "detail":          "no data",
-        }
+# Finding #18 (2026-06-08): removed dead get_short_interest() — zero callers
+# (short-squeeze scoring uses an OHLCV proxy in scorer.py, not this slow
+# yfinance .info call). yfinance (yf) import retained: still used by
+# get_options_flow above.

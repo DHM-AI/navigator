@@ -1,9 +1,18 @@
 name: End of Day
 
 on:
-  schedule:
-    - cron: '50 19 * * 1-5'   # 3:50 PM ET — close intraday positions
-    - cron: '15 20 * * 1-5'   # 4:15 PM ET — send EOD report
+  # ── GitHub cron schedule DISABLED 2026-06-08 (audit Findings #2, #12) ─────────
+  # Both EOD jobs now run on local macOS launchd, which is reliable (GitHub cron
+  # fired zero jobs on 2026-06-05) and DST-safe (fixed at 13:50 / 14:15 Mountain =
+  # 3:50 / 4:15 PM ET year-round, since MT is a constant 2h behind ET). The old
+  # 3:50 GitHub cron drifted to 2:50 PM ET in winter (EST) and would have closed
+  # positions MID-SESSION. launchd jobs:
+  #   - com.illuminati.dusk → dusk_trigger.sh → close_intraday.py (3:50 PM ET)
+  #   - com.illuminati.eod  → eod_trigger.sh  → eod_report.py     (4:15 PM ET)
+  # Kept as workflow_dispatch for manual runs. Crons preserved for reference:
+  # schedule:
+  #   - cron: '50 19 * * 1-5'   # 3:50 PM ET — close intraday positions
+  #   - cron: '15 20 * * 1-5'   # 4:15 PM ET — send EOD report
   workflow_dispatch:
     inputs:
       mode:

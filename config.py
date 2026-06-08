@@ -220,7 +220,9 @@ LOSS_COOLDOWN_HOURS    = 48     # block re-entry for 2 trading days
 # Minimum stock price — penny/low-priced stocks have wide spreads + low
 # liquidity. A $7500 position in a $3 stock = 2500 shares that you can't
 # exit cleanly. Skip them entirely.
-MIN_STOCK_PRICE        = 5.00   # below this → skip the pick
+MIN_STOCK_PRICE        = MIN_PRICE   # single source of truth — alias of MIN_PRICE
+                                     # (#23 2026-06-08: was an independent 5.00 that could
+                                     # silently diverge from MIN_PRICE; now they can't)
 
 # ── Weekend-gap protection ────────────────────────────────────────────────────
 # Originally blocked Friday PM entries (after 2 PM) to prevent weekend gap risk:
@@ -337,9 +339,6 @@ CALIBRATOR_PATH     = "model/saved/calibrator.pkl"   # Platt scaling on top of X
 # were before. TODO: try isotonic regression OR oversample positives in the
 # calibration slice, then re-enable.
 ENABLE_CALIBRATION  = False
-
-# ── Scheduler ─────────────────────────────────────────────────────────────────
-SCAN_TIME_ET = "08:00"
 
 # ── Training ──────────────────────────────────────────────────────────────────
 TRAIN_YEARS        = 5     # bumped from 3 → 5 (now includes 2020 COVID + 2022 bear)

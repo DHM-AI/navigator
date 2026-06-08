@@ -1,36 +1,33 @@
 name: Illuminati — Daily Scan (ARGUS · CIPHER · PYTHIA · THEMIS · APEX · ORACLE)
 
 on:
-  schedule:
-    # All times in UTC. Market hours ET = UTC-4 (EDT, summer) / UTC-5 (EST, winter)
-    # Currently EDT (UTC-4):
-    # ── Primary triggers (day-trade optimized, 2026-06-05) ──────────────
-    # Removed: 3:30 PM (only 20 min before DUSK, too late for day trades)
-    #          4:00 PM (market closed, useless for day trades)
-    # Added:   10:00 AM (fills the 9:30-10:30 opening-hour gap — highest
-    #                    volume/momentum window of the day)
-    - cron: '0 11 * * 1-5'    #  7:00 AM ET — pre-market open
-    - cron: '0 12 * * 1-5'    #  8:00 AM ET — pre-market momentum
-    - cron: '0 13 * * 1-5'    #  9:00 AM ET — market just opened
-    - cron: '30 13 * * 1-5'   #  9:30 AM ET — exact market open
-    - cron: '0 14 * * 1-5'    # 10:00 AM ET — opening-hour momentum ← NEW
-    - cron: '30 14 * * 1-5'   # 10:30 AM ET — mid-morning momentum
-    - cron: '0 15 * * 1-5'    # 11:00 AM ET — late morning
-    - cron: '0 16 * * 1-5'    # 12:00 PM ET — midday
-    - cron: '0 17 * * 1-5'    #  1:00 PM ET — early afternoon
-    - cron: '0 18 * * 1-5'    #  2:00 PM ET — afternoon
-    - cron: '0 19 * * 1-5'    #  3:00 PM ET — last useful entry (DUSK at 3:50)
-    # Note: ORACLE (10 PM ET) is now owned exclusively by oracle.yml — removed from here to prevent double-run
-    # ── 30-min fallback triggers (catch GitHub cron delays) ────────────
-    # GitHub's cron scheduler can lag 30-120 min. These run 30 min after
-    # primary triggers. The scan itself deduplicates: if a scan ran within
-    # the last 50 min it skips execution, so no double-scanning occurs.
-    - cron: '30 11 * * 1-5'   #  7:30 AM ET — fallback for 7 AM
-    - cron: '30 12 * * 1-5'   #  8:30 AM ET — fallback for 8 AM
-    - cron: '30 15 * * 1-5'   # 11:30 AM ET — fallback for 11 AM
-    - cron: '30 16 * * 1-5'   # 12:30 PM ET — fallback for noon
-    - cron: '30 17 * * 1-5'   #  1:30 PM ET — fallback for 1 PM
-    - cron: '30 18 * * 1-5'   #  2:30 PM ET — fallback for 2 PM
+  # ── GitHub cron schedule DISABLED 2026-06-08 (audit Findings #2, #8, #12) ─────
+  # The scan pipeline PLACES ORDERS. Running it from BOTH GitHub Actions crons and
+  # the local macOS launchd scanner (com.illuminati.scan, every 30 min) with no
+  # cross-process dedup risked DOUBLE orders / double exposure (#2). GitHub's cron
+  # also drifts 1h in winter EST (#12), and the old "skips if a scan ran in the
+  # last 50 min" comment was false — no such throttle existed (#8).
+  #
+  # launchd is now the SOLE automated scan path: it is reliable (GitHub cron had
+  # been firing zero scans) and DST-safe (gates on America/New_York local time).
+  # Trade-off: if the Mac is asleep/off, scans don't run — a SAFE failure (missed
+  # opportunity, never a bad/duplicate trade). Re-enable a cloud backup later only
+  # with a shared "scan already ran" dedup gate. The crons are preserved as
+  # comments below for reference / quick re-enable.
+  #
+  # schedule:
+  #   - cron: '0 11 * * 1-5'    #  7:00 AM ET
+  #   - cron: '0 12 * * 1-5'    #  8:00 AM ET
+  #   - cron: '0 13 * * 1-5'    #  9:00 AM ET
+  #   - cron: '30 13 * * 1-5'   #  9:30 AM ET
+  #   - cron: '0 14 * * 1-5'    # 10:00 AM ET
+  #   - cron: '30 14 * * 1-5'   # 10:30 AM ET
+  #   - cron: '0 15 * * 1-5'    # 11:00 AM ET
+  #   - cron: '0 16 * * 1-5'    # 12:00 PM ET
+  #   - cron: '0 17 * * 1-5'    #  1:00 PM ET
+  #   - cron: '0 18 * * 1-5'    #  2:00 PM ET
+  #   - cron: '0 19 * * 1-5'    #  3:00 PM ET
+  # (ORACLE 10 PM ET is owned by oracle.yml; AEGIS by trail_stops.yml + launchd.)
 
   workflow_dispatch:
     inputs:

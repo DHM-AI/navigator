@@ -109,9 +109,11 @@ def trail_positions(
         for o in open_orders:
             orders_by_ticker.setdefault(o.symbol, []).append(o)
 
-        # Load penny-stock floor — rule: no positions below MIN_STOCK_PRICE
+        # Load penny-stock floor from the single source of truth (MIN_PRICE).
+        # (#23 2026-06-08: was importing MIN_STOCK_PRICE with a hardcoded 5.0
+        # fallback that could silently diverge from the real floor.)
         try:
-            from config import MIN_STOCK_PRICE as _MIN_PRICE
+            from config import MIN_PRICE as _MIN_PRICE
         except Exception:
             _MIN_PRICE = 5.0
 

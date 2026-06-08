@@ -96,6 +96,17 @@ def score_ticker(
     if ohlcv_df is None or ohlcv_df.empty:
         return {"ticker": ticker, "score": 0, "error": "no data"}
 
+    # Finding #24 (2026-06-08): enforce the penny-stock skip HERE too, not just in
+    # score_universe's loop. predict_universe (LIVE model path) calls score_ticker
+    # directly, bypassing score_universe's filter, so sub-$MIN_PRICE names were
+    # getting scored on the live path. Skip BEFORE the expensive technicals/pattern
+    # work and return a non-tradeable (score=0) result so callers drop it.
+    try:
+        if float(ohlcv_df["Close"].iloc[-1]) < MIN_PRICE:
+            return {"ticker": ticker, "score": 0, "error": f"below MIN_PRICE (${MIN_PRICE})"}
+    except Exception:
+        pass
+
     technicals = compute_all(ohlcv_df)
     if sentiment is None:
         sentiment = get_sentiment_with_velocity(ticker)

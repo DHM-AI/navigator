@@ -135,6 +135,12 @@ def send_daily_digest(picks_df, explanations: dict) -> bool:
             {"title": "Score",      "value": f"{score:.0f}/100",          "short": True},
             {"title": "Direction",  "value": f"{dir_emoji} {direction.upper()}", "short": True},
             {"title": "Confidence", "value": f"{conf_emoji} {confidence}", "short": True},
+            # Finding #26 (2026-06-08): "Window" shows picks_df["duration"]. In
+            # swing mode (FORCE_DAY_TRADES=False, ENABLE_DAY_TRADES=False as of
+            # 2026-06-08) there is NO duration override, so picks_df duration
+            # equals the real executed duration — the displayed Window is now
+            # accurate. (If day-trade overrides are ever re-enabled, this field
+            # could again show the pre-override duration.)
             {"title": "Window",     "value": duration,                     "short": True},
         ]
 
@@ -297,7 +303,9 @@ def send_test_message() -> bool:
             "• AEGIS (trail stops) · DUSK (intraday close) · ORACLE (learning)\n"
             "• CHRONICLE (EOD report) · PULSE (health check) · GENESIS (monthly retrain)\n\n"
             "You'll receive:\n"
-            "• 📊 Trade picks after each of the 7 daily scans\n"
+            # Finding #25 (2026-06-08): was "7 daily scans" — now ~11 primary
+            # scans + a 30-min launchd backstop; use "each market scan".
+            "• 📊 Trade picks after each market scan\n"
             "• 🩺 PULSE health check reports (weekdays 5PM + Sunday 11AM ET)\n"
             "• 🔔 Instant alerts when APEX places a bracket order"
         )

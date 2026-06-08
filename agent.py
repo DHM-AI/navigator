@@ -353,9 +353,31 @@ def _execute_trades(picks_df: pd.DataFrame, explanations: dict,
                                  duration=duration, atr_pct=_atr_pct)
 
         results.append(result)
-        print(f"  {ticker}: {result.get('status')} ${dollar:.0f} {direction}")
-        send_trade_alert(result)
-        if result.get("status") == "submitted":
+        _status = result.get("status")
+        print(f"  {ticker}: {_status} ${dollar:.0f} {direction}")
+        # Finding #11 (2026-06-08): a "submitted_unprotected" result is a NAKED
+        # market-order entry (bracket failed → simple-order fallback could not
+        # attach a stop). Fire a clearly-worded, DISTINCT alert so the operator
+        # knows the position is UNPROTECTED until AEGIS re-protects it, instead
+        # of treating it like a normal protected bracket entry.
+        if _status == "submitted_unprotected":
+            try:
+                from alerts.slack import _post
+                _sl = result.get("stop_loss")
+                _post({"text": (
+                    f"⚠️ *UNPROTECTED ENTRY — {ticker} {direction.upper()}*\n"
+                    f">Bracket failed; placed a NAKED market order "
+                    f"(${dollar:.0f}) and could NOT attach a stop"
+                    f"{f' (intended ~${_sl:.2f})' if _sl else ''}.\n"
+                    f">Position is UNPROTECTED — AEGIS will attempt to protect it "
+                    f"on its next run. Check manually."
+                )})
+            except Exception:
+                pass
+        else:
+            send_trade_alert(result)
+        # Both "submitted" and "submitted_unprotected" are real entries → count them.
+        if _status in ("submitted", "submitted_unprotected"):
             increment_daily_count()
             _new_positions += 1
             _new_trades    += 1

@@ -52,9 +52,21 @@ PASS = f"{GREEN}✓ PASS{RESET}"
 WARN = f"{YELLOW}⚠ WARN{RESET}"
 FAIL = f"{RED}✗ FAIL{RESET}"
 
-# ── ZEUS limits (hard caps — not in config to avoid accidental edits) ─────────
-MAX_OPEN_POSITIONS   = 15
-MAX_DAILY_TRADES     = 20
+# ── ZEUS limits ──────────────────────────────────────────────────────────────
+# Audit a system against the caps it ACTUALLY enforces, not stale hardcodes.
+# The portfolio guard's effective caps are canary-aware (5/10 under CANARY_MODE,
+# 10/20 full) — import them so ZEUS FAILs at the real limit, not a phantom 15/20
+# that let the canary run at up to 3x intended exposure while reporting PASS.
+# (Audit Finding #4, 2026-06-08.) Fallback to the conservative full-size ceiling
+# only if the import fails.
+try:
+    from risk.portfolio_guard import (MAX_OPEN_POSITIONS as _GUARD_MAX_POS,
+                                       MAX_DAILY_TRADES as _GUARD_MAX_TRADES)
+    MAX_OPEN_POSITIONS = _GUARD_MAX_POS
+    MAX_DAILY_TRADES   = _GUARD_MAX_TRADES
+except Exception:
+    MAX_OPEN_POSITIONS = 10
+    MAX_DAILY_TRADES   = 20
 MIN_BUYING_POWER_PCT = 0.05   # WARN if buying power < 5% of portfolio
 DEEP_UNDERWATER_PCT  = 20.0   # positions down >20% trigger FAIL
 TRAIL_TRIGGER_PCT    = 3.0    # positions up >3% should have trailing stop

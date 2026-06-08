@@ -120,20 +120,6 @@ def explain_picks(scored_df, top_n: int = TOP_N_CLAUDE_ANALYSIS,
 
     return results
 
-
-def stream_explanation(row: dict):
-    """
-    Generator that yields text chunks for a single ticker.
-    Used by the Streamlit deep-dive page for live streaming.
-    """
-    prompt = _build_prompt(row)
-    try:
-        with _get_client().messages.stream(
-            model="claude-sonnet-4-6",
-            max_tokens=400,
-            messages=[{"role": "user", "content": prompt}],
-        ) as stream:
-            for text in stream.text_stream:
-                yield text
-    except Exception as e:
-        yield f"\n\n_Analysis error: {e}_"
+# Finding #19 (2026-06-08): removed dead stream_explanation() — zero callers
+# (the dashboard uses the persisted explanation field). _build_prompt and
+# _get_client imports/helpers retained: still used by explain_picks above.

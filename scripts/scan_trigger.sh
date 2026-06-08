@@ -18,13 +18,15 @@ if [ "$DOW" -gt "5" ]; then
 fi
 
 # Market-hours gate (ET wall clock, DST-aware via macOS TZ).
-# 9:30 AM – 3:00 PM ET: 3 PM is the last useful entry for day trades
-# (DUSK closes everything at 3:50 PM). 10# forces base-10 (avoids 08/09 octal error).
+# 9:30 AM – 3:30 PM ET. 3:30 = NO_ENTRY_AFTER_ET (config.py) — the last moment a
+# new entry is allowed; scanning must cover the whole entry window (#17 2026-06-08:
+# was 3:00, leaving a 3:00–3:30 gap where entries were permitted but no scan ran).
+# 10# forces base-10 (avoids the 08/09 octal-parse error).
 HOUR_ET=$(TZ="America/New_York" date +%H)
 MIN_ET=$(TZ="America/New_York" date +%M)
 TIME_ET=$((10#$HOUR_ET * 60 + 10#$MIN_ET))
 OPEN_ET=570    # 9:30 AM
-CLOSE_ET=900   # 3:00 PM
+CLOSE_ET=930   # 3:30 PM = NO_ENTRY_AFTER_ET
 if [ "$TIME_ET" -lt "$OPEN_ET" ] || [ "$TIME_ET" -gt "$CLOSE_ET" ]; then
   echo "[$(date)] Outside scan window (ET ${HOUR_ET}:${MIN_ET}) — skipping" >> "$LOG"; exit 0
 fi
