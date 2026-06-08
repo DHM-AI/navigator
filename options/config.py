@@ -42,7 +42,12 @@ OPT_STRATEGY = "long_option"     # simplest defined-risk: buy a call (bullish) /
 # manage_options(): take-profit and stop are measured against the PREMIUM PAID
 # (not the underlying), and the time-exit closes before the gamma/theta cliff.
 OPT_TP_PCT   = 0.50              # take-profit: close at +50% gain on premium paid
-OPT_STOP_PCT = 0.50             # stop: close at -50% loss on premium paid
+OPT_STOP_PCT = 0.70             # stop: close at -70% loss on premium paid
+                                # (widened 50%->70% on 2026-06-08: long options are
+                                #  leveraged + start ~8% down from the entry spread, so a
+                                #  tight stop chops out trades that recover. Max loss is
+                                #  still capped at the premium = OPT_MAX_PREMIUM_PCT (3%) of
+                                #  bankroll; the time-exit at 21 DTE also caps duration.)
 OPT_EXIT_DTE = 21               # time-exit: close when <= 21 calendar days to expiration
 
 # --- Entry-window reuse (carry over equity entry lessons) ----------------------

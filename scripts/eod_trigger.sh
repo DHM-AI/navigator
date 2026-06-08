@@ -36,3 +36,8 @@ set -a && . .env && set +a
 echo "[$(date)] Running EOD report (ET ${H}:${M})..." >> "$LOG"
 "$PY" eod_report.py >> "$LOG" 2>&1
 echo "[$(date)] EOD report finished (exit $?)" >> "$LOG"
+
+# Daily OPTIONS (paper) summary — read-only, posts its own Slack message.
+echo "[$(date)] Running options daily report..." >> "$LOG"
+"$PY" -m options.report >> "$LOG" 2>&1
+echo "[$(date)] Options report finished (exit $?)" >> "$LOG"
