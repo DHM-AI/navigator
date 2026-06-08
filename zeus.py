@@ -127,7 +127,21 @@ try:
 
     if is_configured():
         alpaca_acct      = get_account()
-        alpaca_positions = get_positions()
+        _all_positions   = get_positions()
+        # ZEUS is the EQUITY system's guardian. OPTION positions (OCC symbols) are
+        # an isolated, separately-managed subsystem (their exits are the -70%/+50%/
+        # 21-DTE manage rule, NOT equity stops) with their own daily report — so
+        # exclude them from every equity position check below. Without this, Check 1
+        # would try to slap an equity stop on an option (and FAIL), and the
+        # underwater/trailing/count checks would misjudge them. (2026-06-08)
+        def _is_option_sym(t):
+            return isinstance(t, str) and len(t) > 6 and any(c.isdigit() for c in t)
+        option_positions = [p for p in _all_positions if _is_option_sym(p.get("ticker", ""))]
+        alpaca_positions = [p for p in _all_positions if not _is_option_sym(p.get("ticker", ""))]
+        if option_positions:
+            print(f"[ZEUS] {len(option_positions)} option position(s) excluded from equity "
+                  f"checks (managed by the options subsystem): "
+                  f"{', '.join(p['ticker'] for p in option_positions)}")
 
         # Fetch active orders for stop loss inspection.
         # Bracket stop-loss legs have status "held" (not "open"), so we must
@@ -317,27 +331,13 @@ if not alpaca_ok:
     report.add("Daily Trade Count", "WARN", "Alpaca not configured")
 else:
     try:
-        from alpaca.trading.client import TradingClient
-        from alpaca.trading.requests import GetOrdersRequest
-        from alpaca.trading.enums import QueryOrderStatus
-        from config import ALPACA_API_KEY, ALPACA_SECRET_KEY, ALPACA_LIVE_MODE
-
-        _tc = TradingClient(ALPACA_API_KEY, ALPACA_SECRET_KEY, paper=not ALPACA_LIVE_MODE)
-        today_start = now.replace(hour=0, minute=0, second=0, microsecond=0)
-        all_today   = _tc.get_orders(GetOrdersRequest(
-            status=QueryOrderStatus.ALL,
-            after=today_start.strftime("%Y-%m-%dT%H:%M:%SZ"),
-        ))
-        # Count only filled parent orders (not bracket legs)
-        # CRITICAL audit C-5: was comparing "orderstatus.filled" against "filled"
-        # → always 0, daily trade FAIL was unreachable. order_status() normalizes.
-        from execution.alpaca import order_status
-        filled_today = [
-            o for o in all_today
-            if order_status(o) in ("filled", "partially_filled")
-            and getattr(o, "order_class", None) != "leg"
-        ]
-        n_trades = len(filled_today)
+        # Use the guard's authoritative entry counter — the exact number the
+        # MAX_DAILY_TRADES cap is enforced against, so the audit and the cap can
+        # never disagree. (Audit 2026-06-08: ZEUS used to count ALL filled orders —
+        # entries + bracket exit-sells + isolated OPTIONS fills — and falsely FAILed
+        # at "13 trades" when only 5 real equity entries had actually been made.)
+        from risk.portfolio_guard import count_daily_entries
+        n_trades = count_daily_entries()
         if n_trades > MAX_DAILY_TRADES:
             report.add("Daily Trade Count", "FAIL",
                        f"{n_trades} trades today — exceeds MAX_DAILY_TRADES ({MAX_DAILY_TRADES})")

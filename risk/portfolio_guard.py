@@ -343,49 +343,10 @@ def check_trade(
         return False, f"Max {MAX_OPEN_POSITIONS} concurrent positions reached ({len(open_positions)} open)"
 
     # ── Check 3: Daily trade count — read from Alpaca (persists across runs) ──
-    trades_today = 0
-    try:
-        from execution.alpaca import _get_client, is_configured, order_status
-        from alpaca.trading.requests import GetOrdersRequest
-        from alpaca.trading.enums import QueryOrderStatus
-        if is_configured():
-            today_utc    = datetime.now(timezone.utc).strftime("%Y-%m-%dT00:00:00Z")
-            client       = _get_client()
-            orders       = client.get_orders(GetOrdersRequest(
-                status=QueryOrderStatus.ALL, after=today_utc, limit=500))
-            # CRITICAL fix (audit C-3): order_status() normalizes "OrderStatus.FILLED"
-            # → "filled" so the membership check actually matches. Previously the
-            # counter was always 0 and MAX_DAILY_TRADES never enforced.
-            _ACTIVE_OR_FILLED = {"filled", "partially_filled", "new",
-                                 "accepted", "pending_new", "held"}
-            # Count only NEW ENTRIES, never exits. APEX places every entry as a
-            # BRACKET order (order_class=bracket) — both longs and shorts. Position
-            # CLOSES (DUSK, AEGIS, manual close_position) are plain market orders.
-            # BUG (Renato 2026-06-05): the old rule counted any non-stop/limit
-            # market order, so the morning's 4 CLOSING sells (exiting prior-day
-            # positions) maxed MAX_DAILY_TRADES=4 → every new buy blocked → 0 trades
-            # all day. Counting bracket entries only fixes it. Bracket TP/SL children
-            # have parent_order_id (still excluded).
-            # Crypto entries aren't brackets (Alpaca crypto = separate stop/limit, no
-            # bracket order_class), so ALSO count crypto BUY market orders — crypto is
-            # long-only (no shorting), so a crypto buy = an open (a sell = a close).
-            # Crypto symbols use a slash ("BTC/USD"); equities never do. (audit 2026-06-08)
-            def _is_entry(o):
-                if getattr(o, "parent_order_id", None):
-                    return False
-                oc = str(getattr(o, "order_class", "") or "").lower()
-                if "bracket" in oc:
-                    return True
-                sym  = str(getattr(o, "symbol", "") or "")
-                side = str(getattr(o, "side", "") or "").lower()
-                otyp = str(getattr(o, "type", "") or "").lower()
-                return ("/" in sym and side == "buy" and "market" in otyp)
-            trades_today = sum(1 for o in orders
-                               if order_status(o) in _ACTIVE_OR_FILLED
-                               and _is_entry(o))
-    except Exception as e:
-        print(f"[THEMIS] Could not fetch daily trade count from Alpaca ({e}) — using in-memory fallback")
-        trades_today = _daily_trade_count  # fall back to in-memory counter
+    # Single source of truth: count_daily_entries() (below). ZEUS audits the SAME
+    # function so the cap and the audit can never disagree (the "13 vs 5" false
+    # alarm came from ZEUS counting differently — fixed 2026-06-08).
+    trades_today = count_daily_entries()
 
     if trades_today >= MAX_DAILY_TRADES:
         return False, f"Daily trade limit reached ({trades_today}/{MAX_DAILY_TRADES} trades placed today)"
@@ -430,6 +391,54 @@ def check_trade(
 
     # ── All checks passed ─────────────────────────────────────────────────────
     return True, "ok"
+
+
+def count_daily_entries() -> int:
+    """Authoritative count of NEW position ENTRIES opened today — the number the
+    MAX_DAILY_TRADES cap is enforced against AND what ZEUS audits (one source so
+    the two can never drift; the "13 vs 5" false alarm was ZEUS counting its own way).
+
+    Counts only OPENS, never exits:
+      - Equity entries are BRACKET parents (order_class=bracket, longs + shorts).
+        nested=True nests the TP/SL exit legs INSIDE the parent so they don't appear
+        as top-level orders — important because Alpaca leaves parent_order_id EMPTY
+        on filled bracket legs, which otherwise let exit sells be miscounted as
+        entries (the morning's 3 stop-outs inflated the count 5 -> 8).
+      - Crypto entries aren't brackets (separate stop/limit) — also count crypto BUY
+        market orders (crypto is long-only: a buy = an open).
+      - Options are a separate, isolated subsystem (not bracket/crypto) and are
+        excluded — they never consume the equity daily cap.
+    Falls back to the in-memory counter only if Alpaca can't be read.
+    """
+    try:
+        from datetime import datetime, timezone
+        from execution.alpaca import _get_client, is_configured, order_status
+        from alpaca.trading.requests import GetOrdersRequest
+        from alpaca.trading.enums import QueryOrderStatus
+        if not is_configured():
+            return _daily_trade_count
+        today_utc = datetime.now(timezone.utc).strftime("%Y-%m-%dT00:00:00Z")
+        orders = _get_client().get_orders(GetOrdersRequest(
+            status=QueryOrderStatus.ALL, after=today_utc, limit=500, nested=True))
+        _ACTIVE_OR_FILLED = {"filled", "partially_filled", "new",
+                             "accepted", "pending_new", "held"}
+
+        def _is_entry(o):
+            if getattr(o, "parent_order_id", None):
+                return False                       # bracket exit leg (when populated)
+            oc = str(getattr(o, "order_class", "") or "").lower()
+            if "bracket" in oc:
+                return True                        # equity entry parent (long or short)
+            sym  = str(getattr(o, "symbol", "") or "")
+            side = str(getattr(o, "side", "") or "").lower()
+            otyp = str(getattr(o, "type", "") or "").lower()
+            return ("/" in sym and side == "buy" and "market" in otyp)  # crypto open
+
+        return sum(1 for o in orders
+                   if order_status(o) in _ACTIVE_OR_FILLED and _is_entry(o))
+    except Exception as e:
+        print(f"[THEMIS] Could not fetch daily entry count from Alpaca ({e}) — in-memory fallback")
+        return _daily_trade_count
 
 
 def increment_daily_count():
