@@ -928,7 +928,7 @@ print(f"\n{BOLD}[21/23] Catastrophic-Day Circuit Breakers{RESET}")
 try:
     from config import (BLOCK_SAME_DAY_REENTRY, HARD_MAX_LOSS_PCT,
                         DAILY_REALIZED_LOSS_HALT_USD, DAILY_REALIZED_LOSS_HALT_PCT,
-                        KELLY_LOSS_PCT, BANKROLL)
+                        KELLY_LOSS_PCT, BANKROLL, ENABLE_ATR_STOPS, ATR_STOP_CAP_PCT)
     issues = []
     if not BLOCK_SAME_DAY_REENTRY:
         issues.append("same-day re-entry lockout OFF (RYOJ 13x spiral risk)")
@@ -936,6 +936,12 @@ try:
     if HARD_MAX_LOSS_PCT <= KELLY_LOSS_PCT:
         issues.append(f"HARD_MAX_LOSS_PCT ({HARD_MAX_LOSS_PCT:.0%}) <= normal stop "
                       f"({KELLY_LOSS_PCT:.0%}) — would fight the stop")
+    # ...and looser than the WIDEST configured stop (ATR cap), or the hard ceiling
+    # liquidates the most-volatile swing names before their own stop can fire.
+    # (Audit Finding #5, 2026-06-08.)
+    if ENABLE_ATR_STOPS and HARD_MAX_LOSS_PCT <= ATR_STOP_CAP_PCT:
+        issues.append(f"HARD_MAX_LOSS_PCT ({HARD_MAX_LOSS_PCT:.0%}) <= ATR_STOP_CAP "
+                      f"({ATR_STOP_CAP_PCT:.0%}) — hard ceiling pre-empts the widest swing stop")
     if HARD_MAX_LOSS_PCT <= 0 or HARD_MAX_LOSS_PCT > 0.25:
         issues.append(f"HARD_MAX_LOSS_PCT {HARD_MAX_LOSS_PCT:.0%} out of sane range")
     _halt = min(DAILY_REALIZED_LOSS_HALT_USD, BANKROLL * DAILY_REALIZED_LOSS_HALT_PCT)

@@ -105,16 +105,19 @@ MOVE_TARGET_PCT     = 0.20   # 20% ceiling TP — trailing stops handle normal e
 # ── Day trade bracket parameters (tighter than swing) ────────────────────────
 # PAUSED 2026-06-02: DAY trades (added 5/29) were one of three changes during the
 # +$7.6k→-$5.1k swing; no standalone validation. Off until validated separately.
-ENABLE_DAY_TRADES    = True   # classifier active — signals can be tagged "1d (day trade)"
+ENABLE_DAY_TRADES    = False  # OFF — pure swing (Renato 2026-06-08); day classifier never validated standalone
 DAY_TRADE_STOP_PCT   = 0.015  # -1.5% stop (tighter than swing's -3%)
 DAY_TRADE_TARGET_PCT = 0.03   # +3% take profit (quick win, closed by DUSK at 3:50 PM)
 
 # FORCE_DAY_TRADES: when True, EVERY new position is treated as a day trade —
 # tighter bracket (-1.5% / +3%), DAY TIF, closed by DUSK at 3:50 PM ET.
-# Zero overnight exposure. Data showed day-trade style: 68% wr / +$92/trade
-# vs swing: 58% wr / -$13/trade (Renato 2026-06-05). Flip to False to restore
-# swing mode. ENABLE_DAY_TRADES must also be True for classifier to fire.
-FORCE_DAY_TRADES     = True
+# REVERTED TO SWING 2026-06-08 (Renato: "day strategy not working, back to the
+# old strategy"). The day-trade-only experiment (on 2026-06-05) produced losing
+# days on a choppy tape. Swing is the original VALIDATED strategy (the 60% wr /
+# 2.7x PF / 78-trade track record predates day trades). Set back to True only to
+# re-run the day-trade experiment — and re-check Finding #1 (same-day shorts must
+# also be closed by DUSK) and HARD_MAX_LOSS_PCT before doing so.
+FORCE_DAY_TRADES     = False
 
 # ── Volatility filter + ATR-based stops (added 2026-06-02) ───────────────────
 # Backtest of 42 real stop-outs (6/2): the flat -3% swing stop sits INSIDE one
@@ -224,19 +227,19 @@ MIN_STOCK_PRICE        = 5.00   # below this → skip the pick
 # HOOD (-$539) and WOLF (-$554) were bought Fri 2:09 PM, gapped through stops
 # over the weekend. Rule made sense for SWING trades that hold overnight.
 #
-# Disabled 2026-06-05: with FORCE_DAY_TRADES=True, DUSK closes ALL positions
-# at 3:50 PM — including Friday. A trade opened at 2:30 PM Friday is GONE by
-# 3:50 PM Friday. No weekend exposure at all. Blocking Friday PM entries now
-# just wastes the 2 PM and 3 PM scan windows for no reason.
-# Restore to True if swing mode is ever re-enabled.
-# Single, uniform entry cutoff for EVERY day: no new positions after 3:30 PM ET
-# (Renato 2026-06-05: "3:30 every day"). Day trades need room to work before DUSK
-# closes at 3:50; entries after DUSK orphan overnight (FPS opened 3:58 PM →
-# stranded). Entries stop 3:30, DUSK closes 3:50 → no orphan window. No special
-# Friday rule — all weekdays identical.
+# RE-ENABLED 2026-06-08: swing mode restored → positions hold overnight again, so
+# a Friday-afternoon entry can gap through its stop over the weekend. HOOD (-$539)
+# and WOLF (-$554) were bought Fri 2:09 PM and gapped through their stops over a
+# weekend (-$1,093 combined). Block Friday PM entries whenever positions can hold
+# past the close. (Was disabled 2026-06-05 only because FORCE_DAY_TRADES closed
+# everything by 3:50 PM, so there was no weekend exposure to protect against.)
+#
+# NO_ENTRY_AFTER_ET keeps a uniform end-of-day cutoff for all weekdays (avoids
+# bad last-minute fills). For swing this is light protection, not strictly needed,
+# but harmless; the real weekend guard is BLOCK_FRIDAY_PM_ENTRIES below.
 NO_ENTRY_AFTER_ET       = 15.5   # 3:30 PM ET — last entry of the day (all weekdays)
-BLOCK_FRIDAY_PM_ENTRIES = False  # Friday treated like any other day (3:30 cutoff applies)
-FRIDAY_ENTRY_CUTOFF_ET  = 14.0   # unused while BLOCK_FRIDAY_PM_ENTRIES=False
+BLOCK_FRIDAY_PM_ENTRIES = True   # swing: no new entries Friday afternoon (weekend gap guard)
+FRIDAY_ENTRY_CUTOFF_ET  = 14.0   # Friday entries stop at 2:00 PM ET (active when block is True)
 
 # ── Max entries per ticker (added 2026-06-01) ─────────────────────────────────
 # Stops the "accumulate into a loser" pattern. On 2026-06-01 ON was bought 5×
@@ -260,8 +263,14 @@ BLOCK_SAME_DAY_REENTRY  = True   # after a stop-out, no re-entry on that ticker 
 # (B) STOP DIDN'T FIRE — FLY -15.9%, VOYG -15.5%, YMAT -10.8% each lost ~$1,000+
 #     on ONE trade (marked "manual", not sl_hit) = stop never executed. The 3%
 #     stop should never let a position reach -8%. AEGIS force-closes anything
-#     past this hard ceiling at market — a safety net under the normal stop.
-HARD_MAX_LOSS_PCT       = 0.08   # force-close at market if a position is down >8%
+#     past this hard ceiling at market — a safety net BELOW the normal stop.
+#     Must be LOOSER than the widest configured stop or it pre-empts it: swing
+#     ATR stops cap at ATR_STOP_CAP_PCT (10%), so the ceiling sits at 12% — the
+#     ATR stop fires first; this only catches a position that GAPPED past it.
+#     (Was 8% — fine under day-trade 1.5% stops, but would have liquidated the
+#     widest swing names at -8% before their -10% stop. Fixed for swing revert,
+#     2026-06-08, audit Finding #5.)
+HARD_MAX_LOSS_PCT       = 0.12   # force-close at market if a position is down >12%
 
 # (C) NO DAILY KILL-SWITCH — May 27 ran unchecked to -$4,776. The existing
 #     DAILY_LOSS_LIMIT_PCT checks slow account-equity swing; this checks REALIZED
