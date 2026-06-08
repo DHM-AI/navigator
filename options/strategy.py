@@ -139,10 +139,21 @@ def run_options_scan(picks, dry_run=True):
 
     # Seed open_count from currently-open option positions so the OPT_MAX_OPEN
     # cap accounts for live (paper) state, then increment as we plan new opens.
+    # Also collect the UNDERLYINGS already held so we never try to open a 2nd
+    # option in the same name: AMD is the persistent high-score signal, and
+    # re-entering it every scan triggered Alpaca "potential wash trade" rejections
+    # and churn (closing one strike at a loss to open another). (2026-06-08)
+    import re as _re_occ
     try:
-        open_count = len(get_option_positions() or [])
+        _open_opts = get_option_positions() or []
     except Exception:
-        open_count = 0
+        _open_opts = []
+    open_count = len(_open_opts)
+    held_underlyings = {
+        _re_occ.sub(r"\d{6}[CP]\d{8}$", "", str(p.get("symbol") or "")).upper()
+        for p in _open_opts
+    }
+    held_underlyings.discard("")
 
     for pick in picks:
         if not isinstance(pick, dict):
@@ -163,6 +174,13 @@ def run_options_scan(picks, dry_run=True):
             "ticker": ticker, "contract": None, "side": None, "qty": 0,
             "mid": None, "status": "skipped", "reason": "",
         }
+
+        # 0) One option per underlying — never open a 2nd in a name we already
+        #    hold (prevents the AMD wash-trade rejections + loss-churn).
+        if ticker in held_underlyings:
+            base["reason"] = f"already holding an option in {ticker} (no duplicate)"
+            results.append(base)
+            continue
 
         # 1) Gate: allowed underlying, min score, max open.
         try:
