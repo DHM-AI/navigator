@@ -433,15 +433,7 @@ def increment_daily_count():
     _daily_trade_count += 1
 
 
-def get_sector_breakdown(positions: list[dict]) -> dict[str, float]:
-    """
-    Returns {sector: total_market_value} for all open positions.
-    Useful for dashboard display.
-    """
-    breakdown: dict[str, float] = {}
-    for pos in positions:
-        ticker = pos.get("ticker", "")
-        value  = abs(float(pos.get("market_value", 0)))
-        sector = _get_sector(ticker)
-        breakdown[sector] = breakdown.get(sector, 0.0) + value
-    return dict(sorted(breakdown.items(), key=lambda x: x[1], reverse=True))
+# Finding #20 (2026-06-08): removed dead get_sector_breakdown() — zero callers in
+# either repo (the dashboard computes sector exposure client-side / server-side in
+# functions/api/dashboard.js, not via this). Restore from git history if a
+# health/alert payload ever needs server-side sector totals.
