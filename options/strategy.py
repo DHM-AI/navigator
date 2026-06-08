@@ -91,6 +91,47 @@ def run_options_scan(picks, dry_run=True):
     if not picks:
         return results
 
+    # Entry-window guard: carry over the equity entry lessons (no open-chop
+    # entries, no end-of-day entries, no Friday-PM entries). Active only when
+    # OPT_RESPECT_EQUITY_WINDOW is True. The import + clock are wrapped so that
+    # if the import itself errors we fail OPEN to the existing per-pick behavior
+    # (never silently swallow a window-block — only a missing dependency).
+    if getattr(opt_config, "OPT_RESPECT_EQUITY_WINDOW", True):
+        try:
+            from datetime import datetime
+            from zoneinfo import ZoneInfo
+            import config as equity_config  # top-level equity config
+            no_before = float(equity_config.NO_ENTRY_BEFORE_ET)
+            no_after = float(equity_config.NO_ENTRY_AFTER_ET)
+            block_friday_pm = bool(equity_config.BLOCK_FRIDAY_PM_ENTRIES)
+            friday_cutoff = float(equity_config.FRIDAY_ENTRY_CUTOFF_ET)
+        except Exception:
+            # Import / config missing -> fail open: skip the guard entirely.
+            no_before = no_after = friday_cutoff = None
+            block_friday_pm = False
+
+        if no_before is not None:
+            now_et = datetime.now(ZoneInfo("America/New_York"))
+            hour_frac = now_et.hour + now_et.minute / 60.0
+            is_friday = now_et.weekday() == 4  # Mon=0 ... Fri=4
+
+            outside_window = (
+                hour_frac < no_before
+                or hour_frac >= no_after
+                or (block_friday_pm and is_friday and hour_frac >= friday_cutoff)
+            )
+            if outside_window:
+                reason = "outside entry window (open chop / EOD / Friday-PM)"
+                for pick in picks:
+                    ticker = ""
+                    if isinstance(pick, dict):
+                        ticker = (pick.get("ticker") or pick.get("symbol") or "").upper()
+                    results.append({
+                        "ticker": ticker or None, "contract": None, "side": None,
+                        "qty": 0, "mid": None, "status": "skipped", "reason": reason,
+                    })
+                return results
+
     bankroll = _get_bankroll()
     multiplier = getattr(opt_config, "OPT_CONTRACT_MULTIPLIER", 100)
     dte_target = getattr(opt_config, "OPT_TARGET_DTE", 35)
@@ -172,9 +213,21 @@ def run_options_scan(picks, dry_run=True):
             results.append(base)
             continue
 
-        # 3) Size the position under the premium cap.
+        # Entry must be MARKETABLE or it won't fill — a buy limit @ mid sits
+        # unfilled when the quote moves (observed live on paper 2026-06-08: a
+        # limit @ ask filled, a limit @ mid did not). Cross to the ask so the long
+        # actually opens; size on that price so the 2% premium cap reflects what's
+        # really paid. Fall back to mid if the ask is missing. (Exits already use
+        # market orders in manage_options for guaranteed fills.)
         try:
-            qty = size_option_qty(bankroll, mid, multiplier)
+            _ask = float(contract.get("ask") or 0.0)
+        except (TypeError, ValueError):
+            _ask = 0.0
+        entry_px = _ask if _ask > 0 else mid
+
+        # 3) Size the position under the premium cap (on the price actually paid).
+        try:
+            qty = size_option_qty(bankroll, entry_px, multiplier)
         except Exception as exc:
             base["reason"] = f"sizing error: {exc}"
             results.append(base)
@@ -192,7 +245,7 @@ def run_options_scan(picks, dry_run=True):
         try:
             order = place_option_order(
                 contract_symbol, qty, side="buy",
-                limit_price=mid, dry_run=dry_run,
+                limit_price=entry_px, dry_run=dry_run,
             )
         except Exception as exc:
             base["status"] = "error"
