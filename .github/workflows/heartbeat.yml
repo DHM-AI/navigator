@@ -1,0 +1,29 @@
+name: Heartbeat — scanner-alive check
+
+# Runs in the CLOUD (off the Mac) so it can detect when the local Mac that runs
+# all the launchd trading jobs is asleep/off during market hours and the scanner
+# has gone silent. Alerts Slack. Read-only — places no trades. GitHub cron timing
+# is loose, which is fine for a heartbeat (it just needs to fire a few times/day).
+on:
+  schedule:
+    - cron: '0 15 * * 1-5'   # ~11:00 AM ET
+    - cron: '0 17 * * 1-5'   # ~ 1:00 PM ET
+    - cron: '0 19 * * 1-5'   # ~ 3:00 PM ET
+  workflow_dispatch:
+
+jobs:
+  heartbeat:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    env:
+      SUPABASE_URL:         ${{ secrets.SUPABASE_URL }}
+      SUPABASE_KEY:         ${{ secrets.SUPABASE_KEY }}
+      SUPABASE_SERVICE_KEY: ${{ secrets.SUPABASE_SERVICE_KEY }}
+      SLACK_WEBHOOK_URL:    ${{ secrets.SLACK_WEBHOOK_URL }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - run: pip install requests
+      - run: python heartbeat.py
