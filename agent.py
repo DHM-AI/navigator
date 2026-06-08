@@ -30,7 +30,7 @@ from signals.market_regime import get_market_regime
 from signals.options_flow import enrich_with_options
 from model.predictor import predict_universe, model_available
 from analyst.claude_analyst import explain_picks
-from alerts.slack import send_trade_alert
+from alerts.slack import send_trade_alert, send_daily_digest
 from risk.portfolio_guard import check_trade, increment_daily_count
 from config import (TOP_N_CLAUDE_ANALYSIS, MIN_SCORE_TO_ALERT,
                     AUTO_EXECUTE_MIN_SCORE, BANKROLL, ENABLE_OPTIONS_FLOW,
@@ -629,6 +629,19 @@ def run_scan(send_email: bool = True,
     print(f"  Done in {elapsed:.1f}s | {len(picks_df)} setups | "
           f"{len(trade_results)} trades placed")
     print(f"{'='*62}\n")
+
+    # ── Slack scan digest ─────────────────────────────────────────────────────
+    # Post the per-scan summary to Slack (top picks, or "no setups above threshold").
+    # send_daily_digest() existed in alerts/slack.py but was NEVER wired in — so
+    # every scan ran silently and the only Slack traffic was trade alerts + AEGIS.
+    # Now each scan reports (gated by send_email so --no-email suppresses it).
+    # (Renato 2026-06-08)
+    if send_email:
+        try:
+            send_daily_digest(picks_df, explanations)
+        except Exception as _de:
+            print(f"  [slack] scan digest send failed: {_de}")
+
     return picks_df
 
 
