@@ -237,12 +237,16 @@ def test_get_chain_snapshot_mid_when_stubbed(monkeypatch):
 # =========================================================================
 def test_size_option_qty_caps_premium():
     _need(opt_risk, _RISK_ERR, "risk")
-    # bankroll 100000, OPT_MAX_PREMIUM_PCT default 0.02 -> budget 2000.
-    # mid 5.00 * 100 mult = 500/contract -> floor(2000/500) = 4.
-    qty = opt_risk.size_option_qty(100000.0, 5.00, contract_multiplier=100)
-    assert qty == 4
-    # the chosen qty must stay within budget; qty+1 must exceed it
+    # Derive the expectation FROM config so this test can't go stale when the
+    # premium cap changes (it did: OPT_MAX_PREMIUM_PCT 2% -> 3% on 2026-06-08,
+    # which broke the old hardcoded `== 4`). bankroll 100000, mid 5.00 * 100 mult
+    # = $500/contract.
+    import math
     budget = opt_config.OPT_MAX_PREMIUM_PCT * 100000.0
+    expected = math.floor(budget / (5.00 * 100))
+    qty = opt_risk.size_option_qty(100000.0, 5.00, contract_multiplier=100)
+    assert qty == expected, f"expected {expected} got {qty} (cap={opt_config.OPT_MAX_PREMIUM_PCT})"
+    # the chosen qty must stay within budget; qty+1 must exceed it
     assert qty * 5.00 * 100 <= budget
     assert (qty + 1) * 5.00 * 100 > budget
 

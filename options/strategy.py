@@ -234,8 +234,8 @@ def run_options_scan(picks, dry_run=True):
         # Entry must be MARKETABLE or it won't fill — a buy limit @ mid sits
         # unfilled when the quote moves (observed live on paper 2026-06-08: a
         # limit @ ask filled, a limit @ mid did not). Cross to the ask so the long
-        # actually opens; size on that price so the 2% premium cap reflects what's
-        # really paid. Fall back to mid if the ask is missing. (Exits already use
+        # actually opens; size on that price so the OPT_MAX_PREMIUM_PCT cap reflects
+        # what's really paid. Fall back to mid if the ask is missing. (Exits already use
         # market orders in manage_options for guaranteed fills.)
         try:
             _ask = float(contract.get("ask") or 0.0)
