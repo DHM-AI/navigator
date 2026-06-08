@@ -239,6 +239,14 @@ MIN_STOCK_PRICE        = MIN_PRICE   # single source of truth — alias of MIN_P
 # NO_ENTRY_AFTER_ET keeps a uniform end-of-day cutoff for all weekdays (avoids
 # bad last-minute fills). For swing this is light protection, not strictly needed,
 # but harmless; the real weekend guard is BLOCK_FRIDAY_PM_ENTRIES below.
+# ── No-entry at the OPEN (avoid the 9:30-10:00 meat-grinder) ──────────────────
+# Data (60d trade audit, 2026-06-08): entries in the 9:30-10:00 ET open hour were
+# the single worst window — net -$3,649 over 60d and the bulk of the <30-min
+# "fast stop-out" chop (-$5,957 of noise stop-outs total), while the 10:00 AM hour
+# was the most profitable (+$6,383). The open has the widest spreads, gap
+# volatility, and stop-runs. Skip it: no NEW entries before NO_ENTRY_BEFORE_ET.
+# (Scans still RUN at the open for visibility — only ENTRIES are gated.)
+NO_ENTRY_BEFORE_ET      = 10.0   # 10:00 AM ET — no new entries in the first 30 min
 NO_ENTRY_AFTER_ET       = 15.5   # 3:30 PM ET — last entry of the day (all weekdays)
 BLOCK_FRIDAY_PM_ENTRIES = True   # swing: no new entries Friday afternoon (weekend gap guard)
 FRIDAY_ENTRY_CUTOFF_ET  = 14.0   # Friday entries stop at 2:00 PM ET (active when block is True)

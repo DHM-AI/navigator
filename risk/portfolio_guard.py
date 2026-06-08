@@ -144,6 +144,25 @@ def check_trade(
                 f"overnight). Next session."
             )
     except Exception as e:
+        print(f"[THEMIS] end-of-day cutoff check failed for {ticker}: {e} — allowing trade")
+
+    # ── Check 1a2c: No new entries at the OPEN (9:30-10:00 chop) ──────────────
+    # Data (60d audit, 2026-06-08): open-hour entries were the worst window
+    # (-$3,649 / 60d + most <30-min stop-outs); the 10:00 hour was the best
+    # (+$6,383). The open has the widest spreads + gap volatility + stop-runs.
+    # Block NEW entries before NO_ENTRY_BEFORE_ET; scans still run (visibility),
+    # only entries wait for the chop to settle.
+    try:
+        from config import NO_ENTRY_BEFORE_ET
+        from zoneinfo import ZoneInfo
+        _now_et2 = datetime.now(ZoneInfo("America/New_York"))
+        if (_now_et2.hour + _now_et2.minute / 60.0) < NO_ENTRY_BEFORE_ET:
+            return False, (
+                f"{_now_et2.strftime('%H:%M')} ET — before the {NO_ENTRY_BEFORE_ET:.2f} "
+                f"open-chop cutoff. No new positions in the first 30 min "
+                f"(widest spreads / gap volatility). Waiting for the open to settle."
+            )
+    except Exception as e:
         print(f"[THEMIS] EOD-cutoff check failed for {ticker}: {e} — allowing trade")
 
     # ── Check 1a3: Max entries per ticker (anti-accumulation) ─────────────────
