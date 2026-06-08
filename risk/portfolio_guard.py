@@ -347,10 +347,23 @@ def check_trade(
             # positions) maxed MAX_DAILY_TRADES=4 → every new buy blocked → 0 trades
             # all day. Counting bracket entries only fixes it. Bracket TP/SL children
             # have parent_order_id (still excluded).
+            # Crypto entries aren't brackets (Alpaca crypto = separate stop/limit, no
+            # bracket order_class), so ALSO count crypto BUY market orders — crypto is
+            # long-only (no shorting), so a crypto buy = an open (a sell = a close).
+            # Crypto symbols use a slash ("BTC/USD"); equities never do. (audit 2026-06-08)
+            def _is_entry(o):
+                if getattr(o, "parent_order_id", None):
+                    return False
+                oc = str(getattr(o, "order_class", "") or "").lower()
+                if "bracket" in oc:
+                    return True
+                sym  = str(getattr(o, "symbol", "") or "")
+                side = str(getattr(o, "side", "") or "").lower()
+                otyp = str(getattr(o, "type", "") or "").lower()
+                return ("/" in sym and side == "buy" and "market" in otyp)
             trades_today = sum(1 for o in orders
                                if order_status(o) in _ACTIVE_OR_FILLED
-                               and not getattr(o, "parent_order_id", None)
-                               and "bracket" in str(getattr(o, "order_class", "") or "").lower())
+                               and _is_entry(o))
     except Exception as e:
         print(f"[THEMIS] Could not fetch daily trade count from Alpaca ({e}) — using in-memory fallback")
         trades_today = _daily_trade_count  # fall back to in-memory counter
