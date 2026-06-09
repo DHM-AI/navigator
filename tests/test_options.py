@@ -104,8 +104,10 @@ def _need(mod, err, name):
 # =========================================================================
 def test_config_imports_and_sane_values():
     _need(opt_config, _CONFIG_ERR, "config")
-    # core flags
-    assert opt_config.OPT_ENABLE_PAPER is True
+    # core flags — options trading is OFF (Renato 2026-06-08 'revert to no
+    # options trade'). This assertion LOCKS the revert: re-enabling paper
+    # options must be deliberate (flip config + this test together).
+    assert opt_config.OPT_ENABLE_PAPER is False
     # HARD GATE — options must never be allowed to trade live
     assert opt_config.OPT_ENABLE_LIVE is False
 
@@ -304,8 +306,19 @@ def test_can_open_option_boundary_min_score_passes():
 # =========================================================================
 # execution.place_option_order — dry_run never submits
 # =========================================================================
-def test_place_option_order_dry_run_no_submit():
+def _enable_paper_gate(monkeypatch):
+    """Open the OPT_ENABLE_PAPER gate so behavioral tests reach the logic under
+    test. Production keeps the gate False (options OFF, 2026-06-09 revert) —
+    these tests verify the dry-run/qty contracts that sit BEHIND the gate."""
+    if hasattr(opt_exec, "OPT_ENABLE_PAPER"):
+        monkeypatch.setattr(opt_exec, "OPT_ENABLE_PAPER", True)
+    else:  # pragma: no cover - defensive
+        monkeypatch.setattr(opt_config, "OPT_ENABLE_PAPER", True)
+
+
+def test_place_option_order_dry_run_no_submit(monkeypatch):
     _need(opt_exec, _EXEC_ERR, "execution")
+    _enable_paper_gate(monkeypatch)
     res = opt_exec.place_option_order("SPY99C00500000", 2,
                                       side="buy", limit_price=5.0, dry_run=True)
     assert isinstance(res, dict)
@@ -317,14 +330,16 @@ def test_place_option_order_dry_run_no_submit():
     assert "spy99c00500000".lower() in blob or req.get("symbol") == "SPY99C00500000"
 
 
-def test_place_option_order_zero_qty_skipped():
+def test_place_option_order_zero_qty_skipped(monkeypatch):
     _need(opt_exec, _EXEC_ERR, "execution")
+    _enable_paper_gate(monkeypatch)
     res = opt_exec.place_option_order("SPY99C00500000", 0, dry_run=True)
     assert res.get("status") == "skipped_zero_qty"
 
 
-def test_place_option_order_negative_qty_skipped():
+def test_place_option_order_negative_qty_skipped(monkeypatch):
     _need(opt_exec, _EXEC_ERR, "execution")
+    _enable_paper_gate(monkeypatch)
     res = opt_exec.place_option_order("SPY99C00500000", -3, dry_run=True)
     assert res.get("status") == "skipped_zero_qty"
 
