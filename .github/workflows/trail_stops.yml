@@ -28,10 +28,10 @@ on:
         type: choice
         options: ['false', 'true']
 
-# Prevent concurrent AEGIS runs — two simultaneous AEGIS cycles can double-fire partial exits
-concurrency:
-  group: aegis
-  cancel-in-progress: false   # finish the running one; don't kill it
+# Concurrency group REMOVED 2026-06-09: AEGIS runs launchd-only now and the job is
+# force-guarded, so there are no concurrent GitHub runs to serialize. The group only
+# caused "all jobs cancelled" emails when leftover cron-job.org dispatches superseded
+# each other; without it, those bare dispatches finish instantly as SKIPPED.
 
 jobs:
   trail:

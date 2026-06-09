@@ -1,5 +1,18 @@
 # Reliable Scan Trigger — cron-job.org (fixes GitHub's broken scheduler)
 
+> ## ⛔ OBSOLETE as of 2026-06-09 — DISABLE these cron-job.org jobs.
+> The scan/AEGIS/DUSK/EOD now run on **local macOS launchd**, which is the sole
+> automated path. The cron-job.org jobs that POST to
+> `…/actions/workflows/daily_scan.yml/dispatches` and
+> `…/actions/workflows/trail_stops.yml/dispatches` are no longer needed and were
+> *double-executing* with launchd (the GitHub `schedule:` was disabled, but
+> workflow_dispatch from cron-job.org bypassed that). Those workflows are now
+> **force-guarded** (a bare dispatch is a no-op SKIP), so the cron-job.org calls are
+> harmless — but they're pointless API noise and should be **deleted/paused in the
+> cron-job.org account**. Kept below for historical reference only.
+
+---
+
 **Problem (2026-06-05):** GitHub Actions' cron scheduler is unreliable — on 2026-06-05
 it fired ZERO daily scans during market hours (ZEUS ran 11h late, ORACLE 10h late).
 For day trading this is fatal: no scans = no trades.

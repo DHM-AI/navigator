@@ -44,17 +44,11 @@ on:
         type: choice
         options: ['false', 'true']
 
-# Audit 2026-06-02: the scan pipeline runs the AEGIS partial-exit engine
-# (agent.py -> trail_positions). GitHub's free-tier scheduler queues delayed
-# ticks and flushes them in bursts (observed: 5 runs 2-4 min apart at 22:xx),
-# which previously ran the full pipeline — and AEGIS — CONCURRENTLY. Serialize
-# daily_scan with itself so only one runs at a time; queued bursts run one-by-one
-# instead of stacking concurrent AEGIS passes. cancel-in-progress:false so an
-# in-flight scan/trade is never killed mid-run. (Own group, not shared 'aegis',
-# so a 12-min scan can't starve the 15-min trail_stops job.)
-concurrency:
-  group: daily-scan
-  cancel-in-progress: false
+# Concurrency group REMOVED 2026-06-09: it existed to serialize GitHub cron bursts,
+# but there are no cron runs anymore (schedule disabled) and the job is force-guarded
+# (a bare dispatch no-ops). Keeping it only caused "all jobs cancelled" emails when
+# leftover cron-job.org dispatches superseded each other. With no concurrency, those
+# dispatches finish instantly as SKIPPED (the force-guard) — no cancellation, no email.
 
 jobs:
   agent:

@@ -18,7 +18,7 @@ Checks:
  10.  XGBoost model file exists and is fresh
  11.  Partial exit history DB is accessible (silent failure = double-fires)
  12.  ORACLE double-run: daily_scan.yml must NOT own the 10 PM cron slot
- 13.  AEGIS concurrency: trail_stops.yml and eod.yml must have concurrency group
+ 13.  Money-path workflows (daily_scan/trail_stops/eod): no active cron + force-guarded (launchd-only)
  14.  ENABLE_OPTIONS is False (opt-in safety — default True = stray orders)
  15.  DAY trade bracket is tighter than swing (stop < 3%, target < 20%)
  16.  Partial exit fractions sum < 1.0 (T1+T2 must leave a remaining tranche)
@@ -688,30 +688,38 @@ except Exception as e:
 
 
 # ══════════════════════════════════════════════════════════════════════════════
-# CHECK 13 — AEGIS concurrency group prevents overlapping runs
-# Bug found 2026-05-29: trail_stops.yml + eod.yml could run simultaneously
-# at 3:45/3:50/4:00 PM ET → concurrent partial exits before DB records land.
+# CHECK 13 — Money-path workflows cannot auto-run on GitHub (launchd owns them)
+# Replaces the old AEGIS-concurrency check (2026-06-09): the concurrency groups were
+# removed once these went launchd-only. The real safety now is that daily_scan /
+# trail_stops / eod have NO active cron schedule AND a force-guard, so a bare
+# workflow_dispatch — e.g. the leftover cron-job.org jobs hitting the GitHub API,
+# which the disabled schedule does NOT stop — is a no-op SKIP. Without this, GitHub
+# double-executes with launchd (double orders) or mistimes DUSK.
 # ══════════════════════════════════════════════════════════════════════════════
-print(f"\n{BOLD}[13/23] AEGIS Concurrency Guard{RESET}")
+print(f"\n{BOLD}[13/23] Money-Path Workflow Guard{RESET}")
 try:
-    missing_concurrency = []
-    for yml in [".github/workflows/trail_stops.yml", ".github/workflows/eod.yml"]:
+    import re as _re13
+    mp_issues = []
+    for yml in [".github/workflows/daily_scan.yml",
+                ".github/workflows/trail_stops.yml",
+                ".github/workflows/eod.yml"]:
         if not os.path.exists(yml):
-            missing_concurrency.append(f"{yml} (missing)")
+            mp_issues.append(f"{os.path.basename(yml)} (missing)")
             continue
         with open(yml) as f:
             content = f.read()
-        if "concurrency:" not in content or "group: aegis" not in content:
-            missing_concurrency.append(os.path.basename(yml))
-    if missing_concurrency:
-        report.add("AEGIS Concurrency", "FAIL",
-                   f"Missing 'concurrency:' key or 'group: aegis' in: {', '.join(missing_concurrency)} "
-                   f"— concurrent AEGIS runs can double-fire partial exits")
+        if _re13.search(r"(?m)^\s*-\s*cron:", content):
+            mp_issues.append(f"{os.path.basename(yml)}: active cron schedule")
+        if "github.event.inputs.force" not in content:
+            mp_issues.append(f"{os.path.basename(yml)}: no force-guard")
+    if mp_issues:
+        report.add("Money-Path Workflow Guard", "FAIL",
+                   "; ".join(mp_issues) + " — GitHub could double-execute with launchd")
     else:
-        report.add("AEGIS Concurrency", "PASS",
-                   "trail_stops.yml + eod.yml both have concurrency: group=aegis")
+        report.add("Money-Path Workflow Guard", "PASS",
+                   "daily_scan/trail_stops/eod: no cron + force-guarded (launchd-only; bare dispatch no-ops)")
 except Exception as e:
-    report.add("AEGIS Concurrency", "WARN", str(e)[:80])
+    report.add("Money-Path Workflow Guard", "WARN", str(e)[:80])
 
 
 # ══════════════════════════════════════════════════════════════════════════════

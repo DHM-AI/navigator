@@ -28,10 +28,10 @@ on:
         type: choice
         options: ['false', 'true']
 
-# Share AEGIS concurrency group with trail_stops.yml — prevents concurrent partial-exit runs
-concurrency:
-  group: aegis
-  cancel-in-progress: false
+# Concurrency group REMOVED 2026-06-09: DUSK + EOD run launchd-only now and the job is
+# force-guarded, so there are no concurrent GitHub runs to serialize. The group only
+# caused "all jobs cancelled" emails when leftover cron-job.org dispatches superseded
+# each other; without it, those bare dispatches finish instantly as SKIPPED.
 
 jobs:
   eod:
