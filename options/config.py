@@ -11,7 +11,11 @@ live orders.
 """
 
 # --- Master gates --------------------------------------------------------------
-OPT_ENABLE_PAPER = True          # options run on the PAPER endpoint
+OPT_ENABLE_PAPER = False         # OPTIONS TRADING OFF (Renato 2026-06-08: "revert to
+                                 # no options trade"). place_option_order /
+                                 # close_option_position return {"status":"disabled"};
+                                 # run_options_scan + manage_options no-op. Open position
+                                 # was flattened first. Flip True to re-enable paper options.
 OPT_ENABLE_LIVE  = False         # HARD GATE — options NEVER trade live
 
 # --- Universe ------------------------------------------------------------------
