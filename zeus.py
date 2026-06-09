@@ -1054,6 +1054,47 @@ except Exception as e:
 
 
 # ══════════════════════════════════════════════════════════════════════════════
+# CHECK 24 — Entry Quality Gates (60d autopsy, 2026-06-09)
+# The trade autopsy decomposed 691 round-trips: the system only makes money on
+# LONGS (PF 1.23 vs shorts 0.57), in $20+ names (PF 1.2-2.3 vs 0.25-0.27 below),
+# entered 10 AM-1 PM ET (PF 2.2-4.6 vs 0.00-0.26 after 1 PM). These gates encode
+# that. This check makes sure none of them silently revert.
+# ══════════════════════════════════════════════════════════════════════════════
+print(f"\n{BOLD}[24/24] Entry Quality Gates (long-only · $20 floor · 10-13 ET window){RESET}")
+try:
+    from config import (ENABLE_SHORTS, MIN_PRICE as _MP,
+                        NO_ENTRY_BEFORE_ET as _NEB, NO_ENTRY_AFTER_ET as _NEA)
+    issues = []
+    if ENABLE_SHORTS:
+        issues.append("ENABLE_SHORTS=True — shorts lost -$1,596 / PF 0.57 over 60d")
+    if _MP < 20.0:
+        issues.append(f"MIN_PRICE ${_MP:.0f} < $20 — the $5-20 band bled (PF 0.25)")
+    if _NEB < 10.0:
+        issues.append(f"NO_ENTRY_BEFORE_ET {_NEB} < 10.0 — open chop window re-opened")
+    if _NEA > 13.0:
+        issues.append(f"NO_ENTRY_AFTER_ET {_NEA} > 13.0 — afternoon bleed window re-opened")
+    if _NEB >= _NEA:
+        issues.append(f"entry window inverted ({_NEB} >= {_NEA}) — NO entries possible")
+    # confirm the long-only gate is wired into BOTH the pick loop and place_order
+    import inspect as _insp
+    import agent as _ag
+    from execution import alpaca as _alp
+    if "ENABLE_SHORTS" not in _insp.getsource(_ag):
+        issues.append("long-only gate NOT wired in agent.py pick loop")
+    if "ENABLE_SHORTS" not in _insp.getsource(_alp):
+        issues.append("long-only gate NOT wired in execution/alpaca.py place_order")
+    if issues:
+        report.add("Entry Quality Gates", "FAIL", "; ".join(issues))
+    else:
+        report.add("Entry Quality Gates", "PASS",
+                   f"long-only ON · MIN_PRICE ${_MP:.0f} · entries {_NEB:.0f}:00-{_NEA:.0f}:00 ET only")
+except ImportError as ie:
+    report.add("Entry Quality Gates", "FAIL", f"gate config missing: {str(ie)[:80]}")
+except Exception as e:
+    report.add("Entry Quality Gates", "WARN", str(e)[:80])
+
+
+# ══════════════════════════════════════════════════════════════════════════════
 # SUMMARY — terminal
 # ══════════════════════════════════════════════════════════════════════════════
 overall = report.overall()

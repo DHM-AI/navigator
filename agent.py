@@ -190,6 +190,20 @@ def _execute_trades(picks_df: pd.DataFrame, explanations: dict,
             _record_block(ticker, "Kelly sizing returned $0 — no position size allocated")
             continue
 
+        # ── Long-only mode (2026-06-09, 60d autopsy) ─────────────────────────
+        # Shorts: -$1,596 / PF 0.57 over 147 round-trips; longs +$3,280 / PF 1.23.
+        # Skip bearish picks here so they don't consume daily-trade slots;
+        # place_order() has the matching hard gate as the safety net.
+        try:
+            from config import ENABLE_SHORTS as _shorts_ok
+        except ImportError:
+            _shorts_ok = False
+        if direction == "bearish" and not _shorts_ok:
+            _msg = "Long-only mode — bearish picks not traded (shorts PF 0.57 over 60d)"
+            print(f"  {ticker}: SKIPPED — {_msg}")
+            _record_block(ticker, _msg)
+            continue
+
         # ── Volatility filter (added 2026-06-02) ─────────────────────────────
         # Block auto-exec on ultra-volatile names (ATR% > MAX_ENTRY_ATR_PCT).
         # Backtest of real stop-outs: these junk/micro-cap names (e.g. YMAT 37%

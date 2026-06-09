@@ -178,7 +178,10 @@ DAILY_LOSS_LIMIT_PCT = 0.05  # halt trading if down 5% in a day
 # from -$2,655 to +$1,020. Enforced as a HARD pre-trade gate (execution/alpaca.py)
 # AND a pre-scoring skip (signals/scorer.py) so junk is never scored or traded.
 # (Renato 2026-06-04)
-MIN_PRICE = 5.0
+# RAISED 5 -> 20 on 2026-06-09 (60d trade autopsy): the leak extends above $5.
+# The $5-20 band lost -$1,236 over 56 trips (38% win, PF 0.25, avg win only $19 —
+# spreads eat the edge on cheap names). $20-100 = PF 1.20, $100+ = PF 2.27.
+MIN_PRICE = 20.0
 
 # ── Sentiment Guard ───────────────────────────────────────────────────────────
 # Monitors open positions for sentiment reversal and takes protective action.
@@ -247,9 +250,24 @@ MIN_STOCK_PRICE        = MIN_PRICE   # single source of truth — alias of MIN_P
 # volatility, and stop-runs. Skip it: no NEW entries before NO_ENTRY_BEFORE_ET.
 # (Scans still RUN at the open for visibility — only ENTRIES are gated.)
 NO_ENTRY_BEFORE_ET      = 10.0   # 10:00 AM ET — no new entries in the first 30 min
-NO_ENTRY_AFTER_ET       = 15.5   # 3:30 PM ET — last entry of the day (all weekdays)
+# TIGHTENED 15.5 -> 13.0 on 2026-06-09 (60d autopsy): afternoon entries bleed.
+# 1 PM hour: 0% win across 23 trades (PF 0.00). 3 PM hour: -$2,774, 35% win,
+# PF 0.26. Combined 1 PM+ entries = -$3,074 net. The profitable window is
+# 10 AM-1 PM (PF 2.2-4.6, +$8,493). Swing entries need the rest of the day
+# to develop; afternoon entries get stopped in the close chop instead.
+NO_ENTRY_AFTER_ET       = 13.0   # 1:00 PM ET — last entry of the day (all weekdays)
 BLOCK_FRIDAY_PM_ENTRIES = True   # swing: no new entries Friday afternoon (weekend gap guard)
-FRIDAY_ENTRY_CUTOFF_ET  = 14.0   # Friday entries stop at 2:00 PM ET (active when block is True)
+FRIDAY_ENTRY_CUTOFF_ET  = 14.0   # Friday entries stop at 2:00 PM ET (moot while
+                                 # NO_ENTRY_AFTER_ET=13.0 is tighter; kept as a
+                                 # backstop if the EOD cutoff is ever loosened)
+
+# ── Long-only mode (added 2026-06-09) ─────────────────────────────────────────
+# 60d autopsy: SHORTS lost -$1,596 over 147 round-trips (47% win, PF 0.57,
+# avg win $30 vs avg loss $47) while LONGS made +$3,280 (56% win, PF 1.23).
+# The model's bearish calls don't translate into profitable shorts after
+# borrow/spread/squeeze costs. Enforced in execution/alpaca.py place_order()
+# (hard gate) and skipped in the agent pick loop. Set True to re-enable shorts.
+ENABLE_SHORTS = False
 
 # ── Max entries per ticker (added 2026-06-01) ─────────────────────────────────
 # Stops the "accumulate into a loser" pattern. On 2026-06-01 ON was bought 5×

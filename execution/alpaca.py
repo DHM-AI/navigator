@@ -322,6 +322,16 @@ def place_order(ticker: str, dollar_amount: float, direction: str,
     mode = "LIVE" if is_live_mode() else "PAPER"
     side = "buy" if direction == "bullish" else "sell"
 
+    # ── Long-only gate (2026-06-09) ───────────────────────────────────────
+    # 60d autopsy: shorts -$1,596 / PF 0.57 over 147 round-trips vs longs
+    # +$3,280 / PF 1.23. Bearish calls don't survive borrow+spread costs.
+    if side == "sell":
+        from config import ENABLE_SHORTS
+        if not ENABLE_SHORTS:
+            print(f"[APEX] {ticker} bearish entry blocked — ENABLE_SHORTS=False (long-only mode)")
+            return {"status": "skipped", "ticker": ticker,
+                    "reason": "Shorts disabled (long-only mode, 60d autopsy: shorts PF 0.57)"}
+
     # For short orders, verify the asset is actually shortable on Alpaca
     # before attempting — avoids code 42210000 "asset cannot be sold short"
     if side == "sell":
