@@ -37,6 +37,12 @@ on:
         default: 'scan'
         type: choice
         options: [scan, postmortem, scan-no-trade]
+      force:
+        description: 'Set true to ACTUALLY run. launchd owns the scan; a bare dispatch (e.g. leftover cron-job.org jobs) no-ops to avoid double orders.'
+        required: false
+        default: 'false'
+        type: choice
+        options: ['false', 'true']
 
 # Audit 2026-06-02: the scan pipeline runs the AEGIS partial-exit engine
 # (agent.py -> trail_positions). GitHub's free-tier scheduler queues delayed
@@ -52,6 +58,12 @@ concurrency:
 
 jobs:
   agent:
+    # launchd owns the scan (com.illuminati.scan, every 30 min). A bare
+    # workflow_dispatch — e.g. the leftover cron-job.org jobs still hitting the
+    # GitHub API (which the disabled `schedule:` does NOT stop) — must NOT run
+    # agent.py: that double-executes with the local scanner and places DOUBLE
+    # orders. Only an explicit forced manual run executes. (2026-06-09)
+    if: ${{ github.event.inputs.force == 'true' }}
     runs-on: ubuntu-latest
     # Bumped 30 → 60 min — yfinance rate limiting + delisted-ticker timeouts
     # were causing 30-min timeouts. Most scans complete in ~10-15 min but

@@ -20,6 +20,13 @@ on:
   #   - cron: '0 13 * * 0'     # Sun 9 AM ET
   #   - cron: '0 22 * * 0'     # Sun 6 PM ET
   workflow_dispatch:   # allow manual trigger from GitHub Actions UI
+    inputs:
+      force:
+        description: 'Set true to ACTUALLY run AEGIS. launchd owns it (every 20 min); a bare dispatch (leftover cron-job.org jobs) no-ops.'
+        required: false
+        default: 'false'
+        type: choice
+        options: ['false', 'true']
 
 # Prevent concurrent AEGIS runs — two simultaneous AEGIS cycles can double-fire partial exits
 concurrency:
@@ -28,6 +35,11 @@ concurrency:
 
 jobs:
   trail:
+    # launchd owns AEGIS (com.illuminati.aegis, every 20 min). A bare dispatch —
+    # e.g. the leftover cron-job.org jobs hitting the GitHub API — must NOT run
+    # AEGIS: it would race the local AEGIS and could double-fire partial exits.
+    # Only an explicit forced manual run executes. (2026-06-09)
+    if: ${{ github.event.inputs.force == 'true' }}
     runs-on: ubuntu-latest
     timeout-minutes: 5
 

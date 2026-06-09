@@ -21,6 +21,12 @@ on:
         default: 'both'
         type: choice
         options: [close_intraday, eod_report, both]
+      force:
+        description: 'Set true to ACTUALLY run. launchd owns DUSK + the EOD report; a bare dispatch (leftover cron-job.org jobs) no-ops — a GitHub DUSK could close positions mid-session.'
+        required: false
+        default: 'false'
+        type: choice
+        options: ['false', 'true']
 
 # Share AEGIS concurrency group with trail_stops.yml — prevents concurrent partial-exit runs
 concurrency:
@@ -29,6 +35,11 @@ concurrency:
 
 jobs:
   eod:
+    # launchd owns DUSK (close_intraday, 3:50 ET) + the EOD report (4:15 ET). A
+    # bare dispatch — e.g. leftover cron-job.org jobs hitting the API — must NOT
+    # run: a GitHub DUSK could close positions mid-session and race launchd.
+    # Only an explicit forced manual run executes. (2026-06-09)
+    if: ${{ github.event.inputs.force == 'true' }}
     runs-on: ubuntu-latest
     timeout-minutes: 10
 
