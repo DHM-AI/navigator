@@ -38,40 +38,26 @@ from config import (TOP_N_CLAUDE_ANALYSIS, MIN_SCORE_TO_ALERT,
 import db
 
 
-def _backfill_actual_moves(ohlcv_map: dict) -> None:
+def _backfill_actual_moves(ohlcv_map: dict | None = None) -> None:
+    """Fill predictions.actual_move_5d for aged (>=7d) predictions — the model's
+    feedback loop. Delegates to the standalone backfiller (backfill_actuals.run),
+    which queries the rows that ACTUALLY need filling.
+
+    The previous in-line version loaded db.load_predictions() (PostgREST-capped at
+    ~1000 rows = always the most-recent, all <7 days old), so its ">=7 days" filter
+    skipped every single row and it backfilled 0 of 5,229 predictions in 3 weeks
+    (caught 2026-06-09). run() is idempotent and cheap once caught up — it fetches
+    OHLCV only when there are aged-null rows to fill (typically the day's first scan)."""
     if not db.db_available():
         return
-    rows = db.load_predictions()
-    if not rows:
-        return
-    log = pd.DataFrame(rows)
-    today = pd.Timestamp.today().normalize()
-    changed = 0
-    for _, row in log.iterrows():
-        if pd.notna(row.get("actual_move_5d")):
-            continue
-        pred_date = pd.to_datetime(row["date"])
-        if (today - pred_date).days < 7:
-            continue
-        ticker = row["ticker"]
-        df = ohlcv_map.get(ticker)
-        if df is None or df.empty:
-            continue
-        try:
-            df.index = pd.to_datetime(df.index)
-            future = df.loc[df.index > pred_date]["Close"].head(5)
-            if len(future) < 3:
-                continue
-            entry = float(df.loc[df.index <= pred_date]["Close"].iloc[-1])
-            max_move = (float(future.max()) - entry) / entry * 100
-            min_move = (float(future.min()) - entry) / entry * 100
-            actual = max_move if abs(max_move) >= abs(min_move) else min_move
-            db.update_actual_move(str(row["date"]), ticker, actual)
-            changed += 1
-        except Exception:
-            continue
-    if changed:
-        print(f"[ARGUS] Backfilled {changed} actual moves.")
+    try:
+        import backfill_actuals
+        res = backfill_actuals.run()
+        if res.get("written"):
+            print(f"[ARGUS] Backfilled {res['written']} actual moves "
+                  f"({res.get('nodata', 0)} no-data).")
+    except Exception as e:
+        print(f"[ARGUS] backfill skipped: {e}")
 
 
 def _execute_trades(picks_df: pd.DataFrame, explanations: dict,
