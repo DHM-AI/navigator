@@ -1,17 +1,24 @@
 name: Trailing Stop Manager
 
 on:
-  schedule:
-    # Every 15 min, Mon–Fri ALL DAY (9:00 AM – 4:30 PM ET, 13:00–20:30 UTC)
-    # Reduces gap between AEGIS runs from 30 → 15 minutes for tighter protection
-    - cron: '0,15,30,45 13,14,15,16,17,18,19,20 * * 1-5'
-    # Pre-market sweep (8 AM ET) and after-hours (5 PM ET) bookends
-    - cron: '0 12 * * 1-5'   # 8:00 AM ET — pre-market readiness
-    - cron: '0 21 * * 1-5'   # 5:00 PM ET — post-close cleanup
-    # Weekend runs — tighten stops so they're ready for Monday open
-    - cron: '0 13 * * 6'    # Saturday  9 AM ET
-    - cron: '0 13 * * 0'    # Sunday    9 AM ET
-    - cron: '0 22 * * 0'    # Sunday    6 PM ET — final sweep before Monday open
+  # ── GitHub cron schedule DISABLED 2026-06-08 ──────────────────────────────────
+  # AEGIS now runs SOLELY on local macOS launchd (com.illuminati.aegis, every
+  # 20 min during market hours) — same as scan / DUSK / EOD. Why:
+  #  - The concurrency group below only de-dupes GitHub-vs-GitHub runs; it does
+  #    NOT stop a GitHub AEGIS run from racing the LOCAL launchd AEGIS, which
+  #    could double-fire partial exits / fight over stops. launchd-only removes it.
+  #  - GitHub cron is unreliable and was emitting "all jobs cancelled" emails
+  #    (concurrency superseding queued runs every 15 min).
+  #  - Open positions keep their GTC stops on Alpaca's servers regardless, and the
+  #    heartbeat alerts if the Mac (and thus AEGIS) goes silent.
+  # Kept as workflow_dispatch for manual runs. Crons preserved for reference:
+  # schedule:
+  #   - cron: '0,15,30,45 13,14,15,16,17,18,19,20 * * 1-5'   # every 15 min, mkt hrs
+  #   - cron: '0 12 * * 1-5'   # 8 AM ET pre-market
+  #   - cron: '0 21 * * 1-5'   # 5 PM ET post-close
+  #   - cron: '0 13 * * 6'     # Sat 9 AM ET
+  #   - cron: '0 13 * * 0'     # Sun 9 AM ET
+  #   - cron: '0 22 * * 0'     # Sun 6 PM ET
   workflow_dispatch:   # allow manual trigger from GitHub Actions UI
 
 # Prevent concurrent AEGIS runs — two simultaneous AEGIS cycles can double-fire partial exits
