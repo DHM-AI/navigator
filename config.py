@@ -324,9 +324,11 @@ PARTIAL_EXIT_FRACTION    = PARTIAL_EXIT_TIER1_FRACTION
 # the rule signals can't confirm (no BB squeeze / no compression — just
 # "stock going up"). Set bypass ABOVE the score that bit RYOJ (78) to keep
 # the RYOJ guardrail intact.
-AUTO_EXECUTE_MIN_SCORE      = 75   # raised from 70 — confidence labels now based on
-                                   # blended XGB score so Medium starts at 65;
-                                   # raising the floor keeps execution selective
+AUTO_EXECUTE_MIN_SCORE      = 80   # raised 75→80 on 2026-06-09 edge data: after the
+                                   # actual_move_5d backfill was repaired, the ≥80 tier
+                                   # is where the model actually separates (57% correct
+                                   # /+2.02% dir-move vs 56%/+0.53% at 75-80, ~51% below).
+                                   # Concentrate capital on the tier with measured edge.
 HIGH_SCORE_BYPASS_THRESHOLD = 85   # Low-conf trades only if model is REALLY sure
 # DISABLED 2026-06-02: the "Option B" low-confidence bypass (landed 5/28) was one
 # of three changes that coincided with the +$7.6k→-$5.1k swing. Reverting to the
