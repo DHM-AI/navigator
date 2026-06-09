@@ -143,34 +143,91 @@ def trail_positions(
             try:
                 from config import HARD_MAX_LOSS_PCT
                 if pct_gain_decimal <= -HARD_MAX_LOSS_PCT:
-                    print(f"[AEGIS] {ticker} HARD MAX LOSS breached ({pct_gain:.1f}% "
-                          f"≤ -{HARD_MAX_LOSS_PCT*100:.0f}%) — force-closing at market")
-                    try:
-                        close_position(ticker)
-                        results.append({
-                            "ticker": ticker, "pct_gain": round(pct_gain, 2),
-                            "trail_pct": 0, "order_id": "n/a",
-                            "cancelled_sl": 0, "status": "force_closed_max_loss",
-                            "timestamp": datetime.now().isoformat(),
-                        })
-                        from alerts.slack import _post
-                        _post({"text": (
-                            f"🛑 *HARD MAX-LOSS force-close — {ticker}*\n"
-                            f">{('LONG' if is_long else 'SHORT')} {qty:g} @ ${cur_px:.2f} "
-                            f"· P&L *{pct_gain:+.1f}%* (past -{HARD_MAX_LOSS_PCT*100:.0f}% ceiling)\n"
-                            f">The normal stop did not fire — AEGIS closed it as a safety net."
-                        )})
-                    except Exception as _fce:
-                        print(f"[AEGIS] {ticker} force-close FAILED: {_fce}")
+                    # ── INCIDENT GUARDS (2026-06-09, SMCI) ────────────────────
+                    # Alpaca's position mark printed $36.91 — BELOW the day's
+                    # actual low (38.04; real close 40.64) — so a healthy -3.4%
+                    # position read -12.3% and this breaker CANCELLED the real
+                    # stops + queued a market sell, after hours, on every run.
+                    # Guard 1: equities only fire while the market is OPEN — an
+                    # after-hours market order can't fill; it just strips the
+                    # stops. A REAL breach is still real at the next open and
+                    # fires then, with a mark refreshed by actual trades.
+                    # Guard 2: cross-check the mark against today's bar range —
+                    # a "price" outside the day's range is a phantom print.
+                    _mark_ok = True
+                    _looks_crypto = ("/" in ticker) or (
+                        ticker.upper().endswith("USD") and len(ticker) >= 6)
+                    if not _looks_crypto:
                         try:
-                            from alerts.slack import _post
-                            _post({"text": (
-                                f"🚨 *{ticker} past -{HARD_MAX_LOSS_PCT*100:.0f}% but "
-                                f"force-close FAILED: {str(_fce)[:120]} — CLOSE MANUALLY*"
-                            )})
+                            _clk = client.get_clock()
+                            if not getattr(_clk, "is_open", False):
+                                print(f"[AEGIS] {ticker} max-loss breach on a CLOSED "
+                                      f"market — deferring to the open (after-hours "
+                                      f"marks are unreliable; order couldn't fill anyway)")
+                                _mark_ok = False
                         except Exception:
                             pass
-                    continue   # position closing — skip all other logic
+                        if _mark_ok:
+                            try:
+                                import requests as _rq
+                                from config import (ALPACA_API_KEY as _AK,
+                                                    ALPACA_SECRET_KEY as _AS)
+                                _bars = (_rq.get(
+                                    f"https://data.alpaca.markets/v2/stocks/{ticker}/bars",
+                                    headers={"APCA-API-KEY-ID": _AK,
+                                             "APCA-API-SECRET-KEY": _AS},
+                                    params={"timeframe": "1Day", "limit": 1,
+                                            "start": datetime.now().strftime("%Y-%m-%d")},
+                                    timeout=10).json().get("bars")) or []
+                                if _bars:
+                                    _dlo = float(_bars[-1]["l"])
+                                    _dhi = float(_bars[-1]["h"])
+                                    if not (_dlo * 0.97 <= cur_px <= _dhi * 1.03):
+                                        print(f"[AEGIS] {ticker} SUSPECT MARK "
+                                              f"${cur_px:.2f} outside today's range "
+                                              f"{_dlo:.2f}-{_dhi:.2f} — NOT force-closing "
+                                              f"on a phantom print")
+                                        try:
+                                            from alerts.slack import _post
+                                            _post({"text": (
+                                                f"⚠️ *{ticker} suspect price mark* — position "
+                                                f"marked ${cur_px:.2f} (reads {pct_gain:+.1f}%) but "
+                                                f"today's range is {_dlo:.2f}-{_dhi:.2f}. Max-loss "
+                                                f"force-close SKIPPED; verify manually.")})
+                                        except Exception:
+                                            pass
+                                        _mark_ok = False
+                            except Exception:
+                                pass   # bar check unavailable -> proceed (old behavior)
+                    if _mark_ok:
+                        print(f"[AEGIS] {ticker} HARD MAX LOSS breached ({pct_gain:.1f}% "
+                              f"≤ -{HARD_MAX_LOSS_PCT*100:.0f}%) — force-closing at market")
+                        try:
+                            close_position(ticker)
+                            results.append({
+                                "ticker": ticker, "pct_gain": round(pct_gain, 2),
+                                "trail_pct": 0, "order_id": "n/a",
+                                "cancelled_sl": 0, "status": "force_closed_max_loss",
+                                "timestamp": datetime.now().isoformat(),
+                            })
+                            from alerts.slack import _post
+                            _post({"text": (
+                                f"🛑 *HARD MAX-LOSS force-close — {ticker}*\n"
+                                f">{('LONG' if is_long else 'SHORT')} {qty:g} @ ${cur_px:.2f} "
+                                f"· P&L *{pct_gain:+.1f}%* (past -{HARD_MAX_LOSS_PCT*100:.0f}% ceiling)\n"
+                                f">The normal stop did not fire — AEGIS closed it as a safety net."
+                            )})
+                        except Exception as _fce:
+                            print(f"[AEGIS] {ticker} force-close FAILED: {_fce}")
+                            try:
+                                from alerts.slack import _post
+                                _post({"text": (
+                                    f"🚨 *{ticker} past -{HARD_MAX_LOSS_PCT*100:.0f}% but "
+                                    f"force-close FAILED: {str(_fce)[:120]} — CLOSE MANUALLY*"
+                                )})
+                            except Exception:
+                                pass
+                        continue   # position closing — skip all other logic
             except Exception as _hml:
                 print(f"[AEGIS] {ticker} hard-max-loss check error: {_hml}")
 
@@ -180,9 +237,14 @@ def trail_positions(
             # Runs FIRST so we don't waste an AEGIS cycle placing stops on a
             # position we're about to close anyway.
             # ══════════════════════════════════════════════════════════════════
-            if cur_px > 0 and cur_px < _MIN_PRICE:
+            # COUPLING FIX (2026-06-09): MIN_PRICE is the ENTRY floor and was
+            # raised 5 -> 20 today. This emergency close must stay pinned at the
+            # true penny line ($5) — otherwise a $21 position dipping to $19.90
+            # would be market-dumped instead of riding its stop.
+            _PENNY_CLOSE_PX = 5.0
+            if cur_px > 0 and cur_px < _PENNY_CLOSE_PX:
                 try:
-                    print(f"[AEGIS] {ticker} below ${_MIN_PRICE} floor (cur ${cur_px:.2f}) — auto-closing")
+                    print(f"[AEGIS] {ticker} below ${_PENNY_CLOSE_PX} penny line (cur ${cur_px:.2f}) — auto-closing")
                     _close_result = close_position(ticker)
                     results.append({
                         "ticker": ticker, "pct_gain": round(pct_gain, 2),
@@ -195,7 +257,7 @@ def trail_positions(
                         _post({"text": (
                             f"🪙 *Penny-stock auto-close — {ticker}*\n"
                             f">{('LONG' if is_long else 'SHORT')} {qty:g} @ ${cur_px:.2f} "
-                            f"(below ${_MIN_PRICE:.2f} floor) · P&L {pct_gain:+.1f}%"
+                            f"(below ${_PENNY_CLOSE_PX:.2f} penny line) · P&L {pct_gain:+.1f}%"
                         )})
                     except Exception:
                         pass

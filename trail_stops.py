@@ -39,7 +39,7 @@ print("[AEGIS] Running partial exit + trailing stop check...")
 # record applied to a NEW re-entry of the same ticker — only the open_tickers
 # filter covered it, leaving a same-cycle re-entry edge case.
 try:
-    from execution.alpaca import _get_client, get_positions, is_configured as _aok, order_status
+    from execution.alpaca import _get_client, get_positions, is_configured as _aok, order_status, is_live_mode as _ilm
     from alpaca.trading.requests import GetOrdersRequest as _GOR
     from alpaca.trading.enums import QueryOrderStatus as _QOS
     import db as _db
@@ -74,7 +74,9 @@ try:
                     "ticker":   sym,
                     "side":     "close",
                     "dollar_amount": float(getattr(o, "filled_avg_price", 0) or 0) * float(getattr(o, "filled_qty", 0) or 0),
-                    "mode":     "LIVE" if _aok() else "PAPER",
+                    # M-29 (2026-06-09): was `_aok()` (= is_configured — "are
+                    # keys present?"), which stamped every PAPER trade as LIVE.
+                    "mode":     "LIVE" if _ilm() else "PAPER",
                     "status":   _status,
                     "reason":   f"Bracket {_status.replace('_hit', '').upper()} fill detected by AEGIS sweep",
                     "timestamp": _dt.now(_tz.utc).isoformat(),

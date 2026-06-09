@@ -4,6 +4,14 @@ name: Heartbeat — scanner-alive check
 # all the launchd trading jobs is asleep/off during market hours and the scanner
 # has gone silent. Alerts Slack. Read-only — places no trades. GitHub cron timing
 # is loose, which is fine for a heartbeat (it just needs to fire a few times/day).
+# ⚠ M-42 (2026-06-09): GitHub schedule cron is the SAME mechanism this repo has
+# documented firing ZERO jobs (2026-06-05), and public-repo schedules auto-
+# disable after 60 days of inactivity. The watchdog needs its own watchdog:
+# RECOMMENDED — add a cron-job.org job that POSTs to
+#   https://api.github.com/repos/DHM-AI/navigator/actions/workflows/heartbeat.yml/dispatches
+# (body {"ref":"main"}, same PAT header as the old AEGIS jobs) 2-3x/day during
+# market hours. heartbeat is READ-ONLY (alert-only) so a bare dispatch is safe —
+# no force-guard needed, and that is intentional.
 on:
   schedule:
     - cron: '0 15 * * 1-5'   # ~11:00 AM ET

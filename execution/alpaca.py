@@ -642,8 +642,34 @@ def _place_simple_order(ticker: str, dollar_amount: float, side: str,
             )
 
         order  = client.submit_order(order_req)
-        _entry_price = get_current_price(ticker)
-        actual_qty = qty or round(dollar_amount / (_entry_price or 1))
+        # M-28 (2026-06-09): notional BUY fills are FRACTIONAL — round() could
+        # exceed the held qty and the stop gets rejected (naked ~half the time);
+        # and on a quote failure the old `or 1` recorded qty = the dollar amount.
+        # Poll the order briefly for the REAL fill; size the stop on floor(fill).
+        import math as _math
+        import time as _sleep_mod
+        _filled_qty = _filled_px = None
+        for _ in range(6):
+            try:
+                _of = client.get_order_by_id(str(order.id))
+                if order_status(_of) in ("filled", "partially_filled"):
+                    _filled_qty = float(_of.filled_qty or 0) or None
+                    _filled_px  = float(_of.filled_avg_price or 0) or None
+                    if order_status(_of) == "filled":
+                        break
+            except Exception:
+                pass
+            _sleep_mod.sleep(0.5)
+        _entry_price = _filled_px or get_current_price(ticker)
+        if qty:                              # short path: whole shares by construction
+            actual_qty = qty
+        elif _filled_qty:
+            actual_qty = _math.floor(_filled_qty)   # never stop MORE than held
+        elif _entry_price and _entry_price > 0:
+            actual_qty = _math.floor(dollar_amount / _entry_price)
+        else:
+            actual_qty = 0                   # unsizable -> stop attach below skips
+                                             # and status = submitted_unprotected
 
         # Finding #11 (2026-06-08): this market order is NAKED. Immediately try
         # to attach a standalone protective stop (GTC) at the intended stop

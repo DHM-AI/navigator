@@ -66,7 +66,11 @@ def get_recent_ipos(months: int = 12, min_volume: int = 1_000_000) -> list[str]:
         # Exclude warrants, rights, units, SPACs and foreign listings
         # Clean ticker = letters and digits only, or with a single hyphen (like BRK-B)
         import re
-        _clean = re.compile(r'^[A-Z]{1,5}(-[A-Z])?$')
+        # M-35 (2026-06-09): 5-letter symbols ending R/W/U are NASDAQ
+        # rights/warrants/units (APADR, AXINR, XRXDW slipped through, got
+        # scored, and are permanently unfillable). Negative lookahead kills
+        # them; legit 5-letter tickers (GOOGL) survive.
+        _clean = re.compile(r'^(?![A-Z]{4}[RWU]$)[A-Z]{1,5}(-[A-Z])?$')
         df = df[df["symbol"].apply(lambda s: bool(_clean.match(str(s))))]
 
         candidates = df["symbol"].tolist()

@@ -183,10 +183,16 @@ def predict_universe(
             # Override confidence using the BLENDED score, not the raw rule score.
             # scorer.py sets confidence from raw_score (rule signals only), which
             # always reads "Low" in bull trends when no squeeze patterns fire.
-            # The blended XGB score is the authoritative confidence signal.
-            #   ≥ 80  → High   (model strongly confident)
-            #   ≥ 65  → Medium (model moderately confident)
-            #   < 65  → Low
+            #
+            # AUDIT H-24 (2026-06-09) — BE HONEST ABOUT WHAT THIS DOES: because
+            # confidence is derived FROM the blended score (>=80 -> High) and
+            # AUTO_EXECUTE_MIN_SCORE is 80, the agent's "score>=80 AND
+            # confidence>=Medium" gate is a TAUTOLOGY — the confidence clause
+            # can never block. The auto-exec gate is effectively score-only.
+            # The scorer's independent signal-based confidence is preserved in
+            # meta["rule_confidence"] for observation/analysis; if a true
+            # two-factor gate is ever wanted, gate on THAT field.
+            meta["rule_confidence"] = meta.get("confidence", "Low")
             blended_score = meta["score"]
             if blended_score >= 80:
                 meta["confidence"] = "High"

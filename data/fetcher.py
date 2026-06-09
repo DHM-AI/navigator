@@ -280,6 +280,32 @@ def get_ohlcv_batch(tickers: list[str], period: str = "1y",
         yf_results = _yf_get_ohlcv_batch(missing, period=period, chunk_size=30, delay=0.5)
         results.update(yf_results)
 
+
+    # M-26 (2026-06-09): NO consumer checks bar freshness — a halted/delisted/
+    # yf-stale ticker's last bar can be weeks old, and every signal downstream
+    # treats iloc[-1] as "now" (then trades on it). Drop any frame whose last
+    # bar is older than 5 calendar days (covers weekends + a holiday).
+    try:
+        _now = pd.Timestamp.utcnow().tz_localize(None)
+        _stale_dropped = []
+        for _t in list(results.keys()):
+            _df = results[_t]
+            try:
+                if _df is None or _df.empty:
+                    del results[_t]; _stale_dropped.append(_t); continue
+                _last = pd.to_datetime(_df.index[-1])
+                if getattr(_last, "tzinfo", None) is not None:
+                    _last = _last.tz_localize(None)
+                if (_now - _last).days > 5:
+                    del results[_t]; _stale_dropped.append(_t)
+            except Exception:
+                pass
+        if _stale_dropped:
+            print(f"[fetcher] dropped {len(_stale_dropped)} STALE frame(s) "
+                  f"(last bar >5d old): {', '.join(_stale_dropped[:10])}")
+    except Exception:
+        pass
+
     return results
 
 

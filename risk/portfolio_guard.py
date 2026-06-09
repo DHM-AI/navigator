@@ -43,7 +43,9 @@ def _get_sector(ticker: str) -> str:
         _sector_cache[ticker] = sector
         return sector
     except Exception:
-        _sector_cache[ticker] = "Unknown"
+        # M-32 (2026-06-09): do NOT cache failures — yfinance throttling would
+        # poison the cache and silently disable the sector cap for the rest of
+        # the process. Transient failures get retried on the next call.
         return "Unknown"
 
 
@@ -356,7 +358,7 @@ def check_trade(
     # Single source of truth: count_daily_entries() (below). ZEUS audits the SAME
     # function so the cap and the audit can never disagree (the "13 vs 5" false
     # alarm came from ZEUS counting differently — fixed 2026-06-08).
-    trades_today = count_daily_entries()
+    trades_today = count_daily_entries(fail_closed=True)
 
     if trades_today >= MAX_DAILY_TRADES:
         return False, f"Daily trade limit reached ({trades_today}/{MAX_DAILY_TRADES} trades placed today)"
@@ -364,7 +366,11 @@ def check_trade(
     # ── Check 4: Sector concentration ─────────────────────────────────────────
     if open_positions and portfolio_value and portfolio_value > 0:
         new_sector = _get_sector(ticker)
-
+        if new_sector == "Unknown":
+            # M-32: make the silent skip LOUD — the 35% sector cap is not being
+            # enforced for this entry because the sector could not be resolved.
+            print(f"[THEMIS] ⚠ {ticker} sector UNKNOWN (yfinance miss) — "
+                  f"sector-concentration cap NOT enforced for this entry")
         if new_sector != "Unknown":
             # Calculate current sector exposure
             sector_value = 0.0
@@ -403,7 +409,7 @@ def check_trade(
     return True, "ok"
 
 
-def count_daily_entries() -> int:
+def count_daily_entries(fail_closed: bool = False) -> int:
     """Authoritative count of NEW position ENTRIES opened today — the number the
     MAX_DAILY_TRADES cap is enforced against AND what ZEUS audits (one source so
     the two can never drift; the "13 vs 5" false alarm was ZEUS counting its own way).
@@ -456,8 +462,14 @@ def count_daily_entries() -> int:
         return sum(1 for o in orders
                    if order_status(o) in _ACTIVE_OR_FILLED and _is_entry(o))
     except Exception as e:
-        print(f"[THEMIS] Could not fetch daily entry count from Alpaca ({e}) — in-memory fallback")
-        return _daily_trade_count
+        # M-31 (2026-06-09): each scan is a FRESH launchd process, so the
+        # in-memory fallback counter is 0 by construction — on any Alpaca
+        # fetch failure the daily cap was voided. Guards pass fail_closed=True
+        # and get a cap-saturating count (blocks entries); ZEUS keeps the soft
+        # path for reporting.
+        print(f"[THEMIS] Could not fetch daily entry count from Alpaca ({e}) — "
+              + ("FAIL-CLOSED (cap saturated)" if fail_closed else "in-memory fallback"))
+        return 10**6 if fail_closed else _daily_trade_count
 
 
 def increment_daily_count():
