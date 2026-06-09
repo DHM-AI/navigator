@@ -94,14 +94,17 @@ def run() -> dict:
 
     print(f"[ORACLE] Daily intelligence cycle — {datetime.today().strftime('%Y-%m-%d %H:%M')}")
 
-    rows = db.load_predictions(limit=500)
+    # AUDIT H-15 (2026-06-09): load_predictions(limit=500) returned only the
+    # newest ~1.5 days of rows — none old enough to have outcomes, so this
+    # primary path was permanently empty and ORACLE always fell back to
+    # closed-trade cold-start. Query the evaluated rows directly.
+    rows = db.load_evaluated_predictions(limit=4000)
     df = pd.DataFrame(rows) if rows else pd.DataFrame()
     if not df.empty:
         df["date"] = pd.to_datetime(df["date"])
 
-    # ── PRIMARY DATA: 5-day-old predictions with actual_move_5d backfilled ──
-    cutoff    = pd.Timestamp.today() - timedelta(days=5)
-    evaluated = df[df["date"] <= cutoff].dropna(subset=["actual_move_5d"]) if not df.empty else pd.DataFrame()
+    # ── PRIMARY DATA: predictions with actual_move_5d backfilled ──
+    evaluated = df.dropna(subset=["actual_move_5d"]) if not df.empty else pd.DataFrame()
 
     # ── FALLBACK DATA: actual closed Alpaca trades (immediate, no 5-day wait) ──
     # This lets ORACLE start learning from day 1 instead of waiting a week.
@@ -140,13 +143,20 @@ def run() -> dict:
     # Hit definition differs by data source:
     # - Backfilled predictions: "hit" = price moved >= MOVE_TARGET_PCT (20%) in 5 days
     # - Closed Alpaca trades:   "hit" = trade closed profitably (any positive P&L)
-    if closed_trades and len(df.dropna(subset=["actual_move_5d"]) if not df.empty else []) < 5:
-        # Cold-start mode: use actual trade profitability as the hit signal
-        hits     = evaluated[evaluated["actual_move_5d"] > 0]
-        misses   = evaluated[evaluated["actual_move_5d"] <= 0]
+    # AUDIT H-16 (2026-06-09): the old bar was abs(move) >= 20% (the TP
+    # CEILING, direction ignored) — a stock that crashed -25% against a
+    # bullish call counted as a "hit" and the guaranteed ~8% hit rate fed
+    # ORACLE a permanently negative self-assessment. A hit is a move IN THE
+    # PREDICTED DIRECTION; same definition as measure_edge.
+    def _dir_sign(d):
+        d = str(d).lower()
+        return 1 if d in ("bullish", "long", "buy") else (-1 if d in ("bearish", "short", "sell") else 0)
+    if "direction" in evaluated.columns:
+        _dirmove = evaluated["actual_move_5d"] * evaluated["direction"].map(_dir_sign)
     else:
-        hits     = evaluated[evaluated["actual_move_5d"].abs() >= MOVE_TARGET_PCT * 100]
-        misses   = evaluated[evaluated["actual_move_5d"].abs() <  MOVE_TARGET_PCT * 100]
+        _dirmove = evaluated["actual_move_5d"]
+    hits     = evaluated[_dirmove > 0]
+    misses   = evaluated[_dirmove <= 0]
     hit_rate = len(hits) / len(evaluated) if len(evaluated) else 0
 
     print(f"[ORACLE] {len(evaluated)} data points | Hit rate: {hit_rate:.1%} | "

@@ -37,16 +37,21 @@ LOOKAHEAD_DAYS = 7          # a prediction is backfillable once it's this old
 MIN_FUTURE_BARS = 3         # need >=3 of the 5 forward bars to compute a move
 
 
-def fetch_backfillable() -> list[dict]:
-    """All predictions with actual_move_5d NULL and date <= today-7d (paginated)."""
+def fetch_backfillable(recompute: bool = False) -> list[dict]:
+    """Aged predictions to fill: actual_move_5d NULL and date <= today-7d.
+    recompute=True ignores the NULL filter and re-fills ALL aged rows (used
+    once on 2026-06-09 to migrate excursion-based values to close-based)."""
     cutoff = (date.today() - timedelta(days=LOOKAHEAD_DAYS)).isoformat()
     out, off = [], 0
     while True:
+        params = {"select": "date,ticker",
+                  "date": f"lte.{cutoff}", "order": "date.asc"}
+        if not recompute:
+            params["actual_move_5d"] = "is.null"
         r = requests.get(
             f"{SUPA_URL}/rest/v1/predictions",
             headers={**HDR, "Range": f"{off}-{off+999}"},
-            params={"select": "date,ticker", "actual_move_5d": "is.null",
-                    "date": f"lte.{cutoff}", "order": "date.asc"},
+            params=params,
             timeout=60,
         )
         b = r.json()
@@ -61,16 +66,36 @@ def fetch_backfillable() -> list[dict]:
 
 def _close_series(data, ticker: str, multi: bool):
     try:
-        df = data[ticker] if multi else data
+        # M-34 (2026-06-09): yfinance keeps MultiIndex columns even for a
+        # SINGLE ticker (group_by="ticker"), so `multi`-by-count mislabeled
+        # one-ticker days and the lookup returned nothing — those rows stayed
+        # null forever. Detect the actual column shape instead of guessing.
+        df = data
+        if hasattr(data, "columns") and isinstance(data.columns, pd.MultiIndex):
+            try:
+                df = data[ticker]
+            except KeyError:
+                df = data
         s = df["Close"].dropna()
-        s.index = pd.to_datetime(s.index).tz_localize(None)  # tz-naive (the old bug)
+        if hasattr(s, "columns"):           # still a frame -> squeeze
+            s = s.squeeze("columns").dropna()
+        s.index = pd.to_datetime(s.index)
+        if getattr(s.index, "tz", None) is not None:
+            s.index = s.index.tz_localize(None)
         return s
     except Exception:
         return None
 
 
 def compute_move(close: "pd.Series", pred_date: "pd.Timestamp"):
-    """Largest absolute % move over the 5 trading days AFTER pred_date, or None."""
+    """SIGNED close-to-close % move over the 5 trading days AFTER pred_date.
+
+    AUDIT H-17 (2026-06-09): this was max-EXCURSION (largest |move| in either
+    direction), which systematically overstated "% correct" — a stock that
+    spiked +9% intraday then closed +0.1% counted as a +9% hit. The go-live
+    gate (measure_edge) must measure what a held position actually earns, so
+    use the honest close-to-close move. (Conservative bias: ignores bracket
+    take-profit exits, which is the right direction for a go-live gate.)"""
     if close is None or close.empty:
         return None
     past = close[close.index <= pred_date]
@@ -80,9 +105,7 @@ def compute_move(close: "pd.Series", pred_date: "pd.Timestamp"):
     entry = float(past.iloc[-1])
     if entry <= 0:
         return None
-    mx = (float(future.max()) - entry) / entry * 100
-    mn = (float(future.min()) - entry) / entry * 100
-    return round(mx if abs(mx) >= abs(mn) else mn, 2)
+    return round((float(future.iloc[-1]) - entry) / entry * 100, 2)
 
 
 def _patch(date_str: str, ticker: str, move: float) -> bool:
@@ -95,10 +118,10 @@ def _patch(date_str: str, ticker: str, move: float) -> bool:
     return r.status_code in (200, 204)
 
 
-def run(limit: int | None = None, verify: bool = False) -> dict:
+def run(limit: int | None = None, verify: bool = False, recompute: bool = False) -> dict:
     if not SUPA_URL or not SUPA_KEY:
         print("[backfill] no Supabase creds"); return {}
-    rows = fetch_backfillable()
+    rows = fetch_backfillable(recompute=recompute)
     if limit:
         rows = rows[:limit]
     if not rows:
@@ -158,4 +181,4 @@ if __name__ == "__main__":
     lim = None
     if "--limit" in args:
         lim = int(args[args.index("--limit") + 1])
-    run(limit=lim, verify="--verify" in args)
+    run(limit=lim, verify="--verify" in args, recompute="--recompute" in args)

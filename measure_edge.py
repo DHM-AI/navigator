@@ -5,14 +5,23 @@ actually go the right way more often than low-conviction ones? Reads
 predictions.actual_move_5d (populated by backfill_actuals.py) and reports, per score
 bucket, the average move in the predicted direction and the directional hit rate.
 
+METRIC (H-17, 2026-06-09): actual_move_5d is the SIGNED 5-day CLOSE-TO-CLOSE move
+(redefined from max-excursion, which overstated correctness — an intraday spike
+counted as a hit even when the position would have closed flat). Close-based is
+conservative: it ignores bracket TP exits. Numbers measured before 2026-06-09
+(56%/57% tiers) were excursion-based — NOT comparable to current output.
+
 Usage:
   python measure_edge.py                 # all backfilled predictions
   python measure_edge.py --since 2026-06-09   # only the forward window (re-measure)
 
-Baseline reference (full window, measured 2026-06-09 after the backfill repair):
-  TRADED ≥75 = 56% correct / +1.06%   ·   <75 = 51% / -0.26%   ·   corr(score,move)=0.00
-  -> a real but thin edge concentrated in the ≥80 tier (57% / +2.02%).
-The go-live signal is this edge holding (and clearing costs) on a FORWARD window.
+Baseline reference (close-based metric, measured 2026-06-09 after the H-17 recompute):
+  TRADED ≥80 = 47% correct / +0.16%  ·  every bucket 47-51%  ·  corr(score,move)=-0.017
+  -> NO measurable directional edge in the raw model score. (The earlier 56-57%
+  "edge" was a max-excursion artifact.) What edge the SYSTEM has shown lives in
+  trade management + condition gates (see trade_autopsy.py), not the score.
+The go-live gate is therefore TWO tests on a forward window: this report AND
+trade_autopsy realized PF — go live only if realized PF > 1.3 and hit-rate holds.
 """
 from __future__ import annotations
 

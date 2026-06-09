@@ -97,7 +97,11 @@ def main() -> None:
     try:
         status, age = _latest_scan_age_min()
     except Exception as e:
-        print(f"[heartbeat] check error: {e}")
+        # M-41 (2026-06-09): a dead-man's switch that goes silent when its own
+        # check breaks isn't a dead-man's switch. Alert on internal failure.
+        _slack(f":warning: *ILLUMINATI HEARTBEAT* — the heartbeat check itself "
+               f"errored at {now_et:%H:%M} ET: {str(e)[:140]}. Scan status is "
+               f"UNVERIFIED — check the Mac manually.")
         return
     if status == "nokey":
         print("[heartbeat] missing Supabase env — skip")

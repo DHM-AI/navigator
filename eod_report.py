@@ -26,7 +26,11 @@ def run():
     last_equity = acct["last_equity"]
     unrealized  = sum(p.get("unrealized_pl", 0) for p in positions)
     total_today = portfolio - last_equity
-    realized    = total_today - unrealized
+    # AUDIT H-11 (2026-06-09): 'realized' was total_today minus LIFETIME
+    # unrealized P&L — wrong whenever any open position predates today.
+    # Use the actual closed-trade sum (get_closed_trade_pnl now windows on
+    # FILL time, so days=1 is exactly "closed today").
+    realized    = sum(t.get("realized_pnl", 0) for t in closed)
 
     wins   = [t for t in closed if t["realized_pnl"] > 0]
     losses = [t for t in closed if t["realized_pnl"] < 0]

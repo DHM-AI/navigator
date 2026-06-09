@@ -67,6 +67,21 @@ def load_predictions(limit: int = 2000) -> list[dict]:
     return result.data or []
 
 
+def load_evaluated_predictions(limit: int = 4000) -> list[dict]:
+    """Predictions WITH a backfilled outcome (actual_move_5d not null) — the
+    only rows ORACLE / the learning agent can actually learn from.
+
+    AUDIT H-15/M-33 (2026-06-09): both learners filtered load_predictions(),
+    which PostgREST caps at the most-recent ~1000 rows (~3 days, all too new
+    to have outcomes) — so the primary feedback path NEVER had data, the same
+    bug class as the dead backfill. Query the evaluated rows directly."""
+    result = (_client().table("predictions")
+              .select("*")
+              .not_.is_("actual_move_5d", "null")
+              .order("date", desc=True).limit(limit).execute())
+    return result.data or []
+
+
 def load_predictions_for_date(date_str: str) -> list[dict]:
     result = (
         _client()

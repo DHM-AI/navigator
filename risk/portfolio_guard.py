@@ -105,7 +105,11 @@ def check_trade(
                     f"(qty {_o.qty}) — no duplicate signals"
                 )
     except Exception as e:
-        print(f"[THEMIS] Pending-order dedup check failed for {ticker}: {e} — allowing trade")
+        # AUDIT H-30 (2026-06-09): was fail-OPEN — an Alpaca hiccup let
+        # duplicate entries through exactly when state is least knowable.
+        # FAIL CLOSED: this setup can be taken next scan (30 min).
+        return False, (f"Pending-order dedup check failed ({str(e)[:80]}) — "
+                       f"blocking entry (fail-closed); retry next scan")
 
     # ── Check 1a2: No new entries late Friday (weekend-gap protection) ────────
     # A stop can't protect against a Monday gap-down. On 2026-06-01 HOOD and WOLF
@@ -126,7 +130,10 @@ def check_trade(
                     f"Take this setup next session."
                 )
     except Exception as e:
-        print(f"[THEMIS] Friday-entry check failed for {ticker}: {e} — allowing trade")
+        # Fail CLOSED (2026-06-09): if we can't resolve the clock we can't
+        # prove it's NOT Friday afternoon — don't open weekend-gap risk.
+        return False, (f"Friday-entry time check failed ({str(e)[:80]}) — "
+                       f"blocking entry (fail-closed)")
 
     # ── Check 1a2b: General end-of-day entry cutoff (ALL days) ────────────────
     # No new positions after NO_ENTRY_AFTER_ET. Day trades need room to work
@@ -144,7 +151,8 @@ def check_trade(
                 f"overnight). Next session."
             )
     except Exception as e:
-        print(f"[THEMIS] end-of-day cutoff check failed for {ticker}: {e} — allowing trade")
+        return False, (f"Entry-window time check failed ({str(e)[:80]}) — "
+                       f"blocking entry (fail-closed)")
 
     # ── Check 1a2c: No new entries at the OPEN (9:30-10:00 chop) ──────────────
     # Data (60d audit, 2026-06-08): open-hour entries were the worst window
@@ -163,7 +171,8 @@ def check_trade(
                 f"(widest spreads / gap volatility). Waiting for the open to settle."
             )
     except Exception as e:
-        print(f"[THEMIS] EOD-cutoff check failed for {ticker}: {e} — allowing trade")
+        return False, (f"Open-chop time check failed ({str(e)[:80]}) — "
+                       f"blocking entry (fail-closed)")
 
     # ── Check 1a3: Max entries per ticker (anti-accumulation) ─────────────────
     # The duplicate check (Check 1) relies on the in-memory open_positions list,
@@ -203,7 +212,8 @@ def check_trade(
                     f"no accumulating into the same name (the ON 5x pattern)"
                 )
     except Exception as e:
-        print(f"[THEMIS] Entry-cap check failed for {ticker}: {e} — allowing trade")
+        return False, (f"Entry-cap check failed ({str(e)[:80]}) — "
+                       f"blocking entry (fail-closed); retry next scan")
 
     # ── Check 1a4: Same-day re-entry lockout (anti-spiral circuit breaker) ─────
     # The single worst pattern in the data: RYOJ stopped out 13x in ONE day
@@ -417,9 +427,18 @@ def count_daily_entries() -> int:
         from alpaca.trading.enums import QueryOrderStatus
         if not is_configured():
             return _daily_trade_count
-        today_utc = datetime.now(timezone.utc).strftime("%Y-%m-%dT00:00:00Z")
+        # AUDIT H-13 (2026-06-09): "today" must be the ET TRADING day, not UTC.
+        # UTC midnight = 8 PM ET: ZEUS's 11 PM ET audit counted ~0, and the
+        # live cap window rolled over mid-evening.
+        try:
+            from zoneinfo import ZoneInfo
+            _et_mid = datetime.now(ZoneInfo("America/New_York")).replace(
+                hour=0, minute=0, second=0, microsecond=0)
+            _after = _et_mid.astimezone(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+        except Exception:
+            _after = datetime.now(timezone.utc).strftime("%Y-%m-%dT00:00:00Z")
         orders = _get_client().get_orders(GetOrdersRequest(
-            status=QueryOrderStatus.ALL, after=today_utc, limit=500, nested=True))
+            status=QueryOrderStatus.ALL, after=_after, limit=500, nested=True))
         _ACTIVE_OR_FILLED = {"filled", "partially_filled", "new",
                              "accepted", "pending_new", "held"}
 

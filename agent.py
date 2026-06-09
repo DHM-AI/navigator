@@ -82,14 +82,18 @@ def _execute_trades(picks_df: pd.DataFrame, explanations: dict,
     if regime and not regime.get("auto_exec_ok", True):
         print(f"[APEX] ⚠ Regime gate: {regime.get('warning')} — skipping bullish auto-exec")
 
-    # Fetch current positions + account for portfolio guard
+    # Fetch current positions + account for portfolio guard.
+    # AUDIT H-14 (2026-06-09): on failure this fed an EMPTY position list into
+    # check_trade — voiding the duplicate guard, position cap, and sector cap
+    # exactly when Alpaca is flaky. FAIL CLOSED: no position snapshot, no entries.
     try:
         open_positions  = get_positions()
         account         = get_account()
         portfolio_value = account.get("portfolio_value", BANKROLL)
-    except Exception:
-        open_positions  = []
-        portfolio_value = BANKROLL
+    except Exception as _pe:
+        print(f"[APEX] Could not fetch positions/account ({_pe}) — "
+              f"SKIPPING all entries this scan (fail-closed)")
+        return []
 
     _effective_min_score = min_score if min_score is not None else AUTO_EXECUTE_MIN_SCORE
     results    = []
@@ -634,8 +638,26 @@ def run_scan(send_email: bool = True,
             _fdt = False
         if _fdt and "duration" in rows.columns:
             rows["duration"] = "1d (day trade)"
-        db.append_predictions(rows.to_dict(orient="records"))
-        print(f"      Saved {len(rows)} predictions to Supabase")
+        # AUDIT H-19 (2026-06-09): every 30-min scan upserts the same
+        # (date,ticker) row, so a later weaker scan OVERWROTE the score that
+        # actually triggered a trade — corrupting the edge measurement the
+        # go-live decision rests on. Keep the day's STRONGEST row per ticker:
+        # only write rows that are new today or improve on the stored score.
+        _out_rows = rows.to_dict(orient="records")
+        try:
+            _existing = {r["ticker"]: r.get("score") or 0
+                         for r in db.load_predictions_for_date(today)}
+            if _existing:
+                _before = len(_out_rows)
+                _out_rows = [r for r in _out_rows
+                             if (r.get("score") or 0) > (_existing.get(r.get("ticker"), -1))]
+                if len(_out_rows) < _before:
+                    print(f"      Keeping {_before - len(_out_rows)} stronger "
+                          f"earlier-scan row(s) (score-preserving upsert)")
+        except Exception as _me:
+            print(f"      score-preserve merge skipped ({_me}) — writing all rows")
+        db.append_predictions(_out_rows)
+        print(f"      Saved {len(_out_rows)} predictions to Supabase")
 
     # Alpaca execution
     if execute_trades:

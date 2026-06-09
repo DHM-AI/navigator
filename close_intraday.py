@@ -19,16 +19,28 @@ def _get_todays_entries() -> set[str]:
         from alpaca.trading.requests import GetOrdersRequest
         from alpaca.trading.enums import QueryOrderStatus
         from execution.alpaca import order_status   # CRITICAL audit C-4
-        today_utc = datetime.now(timezone.utc).strftime("%Y-%m-%dT00:00:00Z")
+        # M-27/H-13 (2026-06-09): ET trading day, not UTC; and count SHORT
+        # entries too (a short day-trade enters with a SELL bracket parent —
+        # the old buys-only filter meant DUSK never closed short day-trades).
+        try:
+            from zoneinfo import ZoneInfo
+            _et_mid = datetime.now(ZoneInfo("America/New_York")).replace(
+                hour=0, minute=0, second=0, microsecond=0)
+            _after = _et_mid.astimezone(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+        except Exception:
+            _after = datetime.now(timezone.utc).strftime("%Y-%m-%dT00:00:00Z")
         orders    = _get_client().get_orders(GetOrdersRequest(
-            status=QueryOrderStatus.ALL, after=today_utc, limit=500))
-        # Fix C-4: order_status() normalizes "OrderStatus.FILLED" → "filled"
-        # so this set actually matches. Previously DUSK never closed anything.
-        return {
-            o.symbol for o in orders
-            if "buy" in str(getattr(o, "side", "")).lower()
-            and order_status(o) in ("filled", "partially_filled")
-        }
+            status=QueryOrderStatus.ALL, after=_after, limit=500))
+
+        def _is_entry_fill(o):
+            if order_status(o) not in ("filled", "partially_filled"):
+                return False
+            if "buy" in str(getattr(o, "side", "")).lower():
+                return True
+            _oc = str(getattr(o, "order_class", "") or "").lower()
+            return "bracket" in _oc and not getattr(o, "parent_order_id", None)
+
+        return {o.symbol for o in orders if _is_entry_fill(o)}
     except Exception as e:
         print(f"[DUSK] Could not fetch today's orders: {e}")
         return set()

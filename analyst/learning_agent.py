@@ -41,8 +41,8 @@ def _build_analysis_prompt(hits_df: pd.DataFrame, misses_df: pd.DataFrame) -> st
 
     return f"""You are a quantitative trading analyst reviewing last week's prediction results.
 
-{summarize(hits_df, 'HITS (moved 5%+)')}
-{summarize(misses_df, 'MISSES (did not move 5%+)')}
+{summarize(hits_df, 'HITS (moved in the predicted direction over 5 days)')}
+{summarize(misses_df, 'MISSES (moved against the predicted direction)')}
 
 Direction accuracy:
 - Bullish calls that went up: {len(hits_df[(hits_df.get('direction','') == 'bullish') & (hits_df.get('actual_move_5d', 0) > 0)]) if not hits_df.empty else 0}
@@ -80,7 +80,7 @@ def run_postmortem() -> dict:
         print("[learning] No Supabase — skipping postmortem.")
         return {}
 
-    rows = db.load_predictions()
+    rows = db.load_evaluated_predictions(limit=4000)   # M-33: only evaluated rows have outcomes
     if not rows:
         print("[learning] No predictions to analyze yet.")
         return {}
@@ -96,8 +96,17 @@ def run_postmortem() -> dict:
         print(f"[learning] Only {len(evaluated)} evaluated predictions — need 5+ to run postmortem.")
         return {}
 
-    hits = evaluated[evaluated["actual_move_5d"].abs() >= MOVE_TARGET_PCT * 100]
-    misses = evaluated[evaluated["actual_move_5d"].abs() < MOVE_TARGET_PCT * 100]
+    # M-43 (2026-06-09): was abs(move) >= 20% (TP ceiling, direction-blind)
+    # while the prompt told Claude the bar was 5% — the learner reasoned from
+    # mislabeled data. Hit = move in the PREDICTED direction (same definition
+    # as ORACLE + measure_edge).
+    def _dir_sign(d):
+        d = str(d).lower()
+        return 1 if d in ("bullish", "long", "buy") else (-1 if d in ("bearish", "short", "sell") else 0)
+    _dirmove = (evaluated["actual_move_5d"] * evaluated["direction"].map(_dir_sign)
+                if "direction" in evaluated.columns else evaluated["actual_move_5d"])
+    hits = evaluated[_dirmove > 0]
+    misses = evaluated[_dirmove <= 0]
     hit_rate = len(hits) / len(evaluated)
 
     print(f"[learning] {len(evaluated)} predictions | Hit rate: {hit_rate:.1%} | Hits: {len(hits)} | Misses: {len(misses)}")
