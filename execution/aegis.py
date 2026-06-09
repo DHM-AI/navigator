@@ -45,6 +45,7 @@ def trail_positions(
         close_position,
         order_status,
         is_configured,
+        norm_symbol,
     )
     from config import (TRAIL_TRIGGER_PCT, TRAIL_PCT, TRAIL_TIGHTEN_LEVELS,
                         ENABLE_PARTIAL_EXIT, PARTIAL_EXIT_MOVE_TO_BE,
@@ -107,7 +108,9 @@ def trail_positions(
         open_orders = [o for o in _all_active if is_active_order(o)]
         orders_by_ticker: dict = {}
         for o in open_orders:
-            orders_by_ticker.setdefault(o.symbol, []).append(o)
+            # CRITICAL-2 (2026-06-09): crypto orders are 'BTC/USD' but positions
+            # report 'BTCUSD' — key by norm_symbol or AEGIS sees crypto as naked.
+            orders_by_ticker.setdefault(norm_symbol(o.symbol), []).append(o)
 
         # Load penny-stock floor from the single source of truth (MIN_PRICE).
         # (#23 2026-06-08: was importing MIN_STOCK_PRICE with a hardcoded 5.0
@@ -125,7 +128,7 @@ def trail_positions(
             is_long  = "long" in raw_side or "buy" in raw_side
             cur_px   = float(p.get("current_price", 0) or 0)
 
-            ticker_orders = orders_by_ticker.get(ticker, [])
+            ticker_orders = orders_by_ticker.get(norm_symbol(ticker), [])
             pct_gain_decimal = pct_gain / 100.0
 
             # ══════════════════════════════════════════════════════════════════
@@ -433,7 +436,7 @@ def trail_positions(
                         from alpaca.trading.enums import QueryOrderStatus as _QOS
                         _live_orders = [o for o in client.get_orders(
                             _GOR(status=_QOS.ALL, limit=200))
-                            if o.symbol == ticker and is_active_order(o)]
+                            if norm_symbol(o.symbol) == norm_symbol(ticker) and is_active_order(o)]
                     except Exception as _lf_err:
                         print(f"[AEGIS] {ticker} {tier_name}: live order re-fetch failed "
                               f"({str(_lf_err)[:60]}) — falling back to snapshot list")
@@ -476,7 +479,7 @@ def trail_positions(
                             try:
                                 _still = {str(o.id) for o in client.get_orders(
                                     _GOR2(status=_QOS2.ALL, limit=200))
-                                    if o.symbol == ticker and is_active_order(o)
+                                    if norm_symbol(o.symbol) == norm_symbol(ticker) and is_active_order(o)
                                     and str(o.id) in _cancelled_ids}
                             except Exception:
                                 _still = set()
@@ -673,7 +676,7 @@ def trail_positions(
                         _fresh_all = client.get_orders(
                             GetOrdersRequest(status=_QOS.ALL, limit=200))
                         ticker_orders = [o for o in _fresh_all
-                                         if is_active_order(o) and o.symbol == ticker]
+                                         if is_active_order(o) and norm_symbol(o.symbol) == norm_symbol(ticker)]
                         print(f"[AEGIS] {ticker} refreshed orders for _fire_tier "
                               f"({len(ticker_orders)} active)")
                     except Exception as _ro_err:
@@ -979,7 +982,7 @@ def safety_sweep() -> list:
     (e.g. TP still holds the qty), a protective fixed stop is re-placed so the
     position is NEVER left naked. If even that fails, it Slack-alerts loudly.
     """
-    from execution.alpaca import _get_client, get_positions, is_active_order
+    from execution.alpaca import _get_client, get_positions, is_active_order, norm_symbol
     from alpaca.trading.requests import (GetOrdersRequest, TrailingStopOrderRequest,
                                          StopOrderRequest)
     from alpaca.trading.enums import QueryOrderStatus, OrderSide, TimeInForce
@@ -1005,9 +1008,9 @@ def safety_sweep() -> list:
         for o in client.get_orders(GetOrdersRequest(status=QueryOrderStatus.ALL, limit=500)):
             if not is_active_order(o):
                 continue
-            all_active_by_sym.setdefault(o.symbol, []).append(o)
+            all_active_by_sym.setdefault(norm_symbol(o.symbol), []).append(o)
             if "stop" in _ot(o) or "trail" in _ot(o):
-                stops_by_sym.setdefault(o.symbol, []).append(o)
+                stops_by_sym.setdefault(norm_symbol(o.symbol), []).append(o)
 
         # Which symbols will DUSK close at EOD today? Their DAY-TIF stops are
         # intentional (DUSK closes them before the close). For every OTHER
@@ -1048,7 +1051,7 @@ def safety_sweep() -> list:
             pct   = ((cur - entry) / entry * 100 * (1 if is_long else -1)) if entry else 0.0
             close_side = OrderSide.SELL if is_long else OrderSide.BUY
 
-            sym_stops    = stops_by_sym.get(sym, [])
+            sym_stops    = stops_by_sym.get(norm_symbol(sym), [])
             has_trailing = any("trail" in _ot(o) for o in sym_stops)
             has_fixed    = any("stop" in _ot(o) and "trail" not in _ot(o) for o in sym_stops)
 
@@ -1112,7 +1115,7 @@ def safety_sweep() -> list:
                     # day-trade TP limit still holding the qty) before placing the
                     # GTC stop — otherwise the new stop is rejected (held_for_orders),
                     # the same qty-conflict that bit the crypto path.
-                    for o in all_active_by_sym.get(sym, []):
+                    for o in all_active_by_sym.get(norm_symbol(sym), []):
                         try: client.cancel_order_by_id(str(o.id))
                         except Exception: pass
                     gtc_sp = keep_sp or (round(cur * (1 - KELLY_LOSS_PCT), 2) if is_long

@@ -120,6 +120,7 @@ alpaca_acct      = {}
 alpaca_positions = []
 alpaca_orders    = []
 alpaca_ok        = False
+_zeus_query_failed = set()   # symbols whose order-fetch failed — UNVERIFIABLE, never auto-fixed
 
 try:
     from execution.alpaca import is_configured, is_live_mode, get_account, get_positions
@@ -159,10 +160,45 @@ try:
             # positives and auto-fix produced duplicate stops.
             _open_orders = _client.get_orders(
                 GetOrdersRequest(status=QueryOrderStatus.OPEN, limit=500))
-            # Fetch all recent orders to catch "held" bracket stop-loss legs
-            _after = (datetime.now() - timedelta(days=7)).strftime("%Y-%m-%dT00:00:00Z")
-            _all_recent = _client.get_orders(
-                GetOrdersRequest(status=QueryOrderStatus.ALL, after=_after, limit=500))
+            # Fetch recent orders to catch "held" bracket stop-loss legs.
+            # CRITICAL-4 (2026-06-09): the old 7-day ALL-orders window went
+            # BLIND to bracket legs of positions older than a week — ZEUS then
+            # flagged them naked and its auto-fix held_for_orders sweep
+            # CANCELLED the real stop+TP. Query per-position symbols over 60d
+            # instead: precise, never truncates, sees every aged GTC leg.
+            # Crypto positions report slashless ('BTCUSD') while their orders
+            # ride the slash form ('BTC/USD') — query both spellings.
+            _syms = set()
+            for _p in _all_positions:
+                _s = str(_p.get("ticker", ""))
+                if not _s:
+                    continue
+                _syms.add(_s)
+                if _s.endswith("USD") and "/" not in _s and len(_s) > 4:
+                    _syms.add(_s[:-3] + "/USD")
+            _after = (datetime.now() - timedelta(days=60)).strftime("%Y-%m-%dT00:00:00Z")
+            _all_recent = []
+            # FAIL CLOSED (incident 2026-06-09): a transient query failure for
+            # ONE symbol made that position look naked, and the auto-fix then
+            # cancelled its REAL stop+TP (HPE stripped + left naked). A symbol
+            # whose orders can't be fetched is UNVERIFIABLE, never "naked":
+            # retry, then exclude from auto-fix and surface a warning.
+            for _s in sorted(_syms):
+                _got = False
+                for _attempt in (1, 2, 3):
+                    try:
+                        _all_recent += list(_client.get_orders(GetOrdersRequest(
+                            status=QueryOrderStatus.ALL, after=_after,
+                            limit=500, symbols=[_s])))
+                        _got = True
+                        break
+                    except Exception as _qe:
+                        print(f"  [ZEUS] order query failed for {_s} "
+                              f"(attempt {_attempt}/3): {_qe}")
+                        import time as _zt
+                        _zt.sleep(1.0)
+                if not _got:
+                    _zeus_query_failed.add(_s.replace("/", ""))
             # Combine: keep orders in active states (open, held, accepted, pending_new)
             _active_statuses = {"open", "held", "accepted", "pending_new", "new"}
             _held = [o for o in _all_recent
@@ -199,15 +235,22 @@ else:
     protected_tickers = set()
     for o in alpaca_orders:
         otype = str(getattr(o, "type", "")).lower()
+        # CRITICAL-4: normalize symbols — crypto orders carry 'BTC/USD' while
+        # positions report 'BTCUSD'; raw symbols never matched.
+        _osym = str(o.symbol).replace("/", "")
         if "stop" in otype or "trailing" in otype:
-            protected_tickers.add(o.symbol)
+            protected_tickers.add(_osym)
         # Also check bracket order legs
         for leg in (getattr(o, "legs", None) or []):
             if getattr(leg, "stop_price", None):
-                protected_tickers.add(o.symbol)
+                protected_tickers.add(_osym)
 
-    open_tickers  = {p["ticker"] for p in alpaca_positions}
-    unprotected   = open_tickers - protected_tickers
+    open_tickers  = {str(p["ticker"]).replace("/", "") for p in alpaca_positions}
+    _unverifiable = open_tickers & _zeus_query_failed
+    unprotected   = open_tickers - protected_tickers - _unverifiable
+    if _unverifiable:
+        print(f"[ZEUS] ⚠ Could not verify stop coverage for {sorted(_unverifiable)} "
+              f"(order queries failed) — NOT auto-fixing; verify manually")
 
     if unprotected:
         # Auto-fix: place stops for any unprotected position
@@ -219,7 +262,7 @@ else:
         _fix_client = TradingClient(ALPACA_API_KEY, ALPACA_SECRET_KEY, paper=not ALPACA_LIVE_MODE)
         fixed, failed = [], []
         for p in alpaca_positions:
-            if p["ticker"] not in unprotected:
+            if str(p["ticker"]).replace("/", "") not in unprotected:
                 continue
             entry   = p["avg_entry_price"]
             qty     = abs(p["qty"])
@@ -238,40 +281,25 @@ else:
                     break
                 except Exception as _ze:
                     _zes = str(_ze).lower()
-                    # held_for_orders / 40310000: stale bracket legs are holding
-                    # the shares. Sweep cancel all active orders for this ticker,
-                    # wait 2s for Alpaca to release the hold, then retry once.
+                    # INCIDENT 2026-06-09: the old path here SWEEP-CANCELLED all
+                    # active orders on held_for_orders and re-placed a flat stop.
+                    # When the "naked" flag was a false positive (HPE: transient
+                    # order-query failure), that sweep cancelled the position's
+                    # REAL stop+TP and then failed to replace them — ZEUS itself
+                    # created the naked position it exists to prevent.
+                    # held_for_orders / insufficient-qty on a STOP placement
+                    # means an existing exit order already holds these shares —
+                    # i.e. the position has protection the detector didn't see.
+                    # Treat as protected, touch NOTHING.
                     if ("insufficient" in _zes or "held_for_orders" in _zes
                             or "40310000" in str(_ze)):
-                        print(f"[ZEUS] {_ticker} stop hit held_for_orders "
-                              f"— cancelling stale orders and retrying")
-                        try:
-                            _stale = _fix_client.get_orders(_GORZEQ(
-                                status=_ZQOS.ALL, limit=200))
-                            _active_st = {"open","held","accepted","pending_new","new"}
-                            for _so in _stale:
-                                if (getattr(_so,"symbol","") == _ticker
-                                        and str(getattr(_so,"status","")).lower().replace(
-                                            "orderstatus.","") in _active_st):
-                                    try:
-                                        _fix_client.cancel_order_by_id(str(_so.id))
-                                    except Exception:
-                                        pass
-                        except Exception:
-                            pass
-                        _zeus_time.sleep(2.0)
-                        # Retry once with GTC, fall back to DAY
-                        for _r_tif in [TimeInForce.GTC, TimeInForce.DAY]:
-                            try:
-                                _fix_client.submit_order(StopOrderRequest(
-                                    symbol=_ticker, qty=qty, side=side,
-                                    time_in_force=_r_tif, stop_price=stop))
-                                if _ticker not in fixed: fixed.append(_ticker)
-                                _placed = True
-                                break
-                            except Exception:
-                                pass
-                        break  # don't iterate outer tif loop again
+                        print(f"[ZEUS] {_ticker}: shares already held by an existing "
+                              f"exit order — position is protected (detector false "
+                              f"positive); leaving orders untouched")
+                        if _ticker not in fixed:
+                            fixed.append(f"{_ticker} (already-protected)")
+                        _placed = True
+                        break  # don't try DAY either — nothing to fix
                     if tif == TimeInForce.DAY:
                         pass  # falls through to failed append below
             if not _placed and _ticker not in fixed:

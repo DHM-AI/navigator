@@ -166,10 +166,12 @@ def _execute_trades(picks_df: pd.DataFrame, explanations: dict,
                     "mode":     "LIVE" if os.getenv("ALPACA_LIVE_MODE", "").lower() == "true" else "PAPER",
                     "status":   "blocked",
                     "reason":   _reason[:300],
-                    "timestamp": datetime.now().isoformat(),
+                    "timestamp": _dt_mod.datetime.now().isoformat(),
                 })
-        except Exception:
-            pass
+        except Exception as _rbe:
+            # H-7 fix: was a silent bare except — the NameError above hid here
+            # for weeks and no block reason ever reached the dashboard.
+            print(f"[THEMIS] _record_block failed for {_tk}: {_rbe}")
 
     for _, row in auto_picks.iterrows():
         ticker    = row["ticker"]
@@ -200,6 +202,14 @@ def _execute_trades(picks_df: pd.DataFrame, explanations: dict,
             _shorts_ok = False
         if direction == "bearish" and not _shorts_ok:
             _msg = "Long-only mode — bearish picks not traded (shorts PF 0.57 over 60d)"
+            print(f"  {ticker}: SKIPPED — {_msg}")
+            _record_block(ticker, _msg)
+            continue
+        # AUDIT C-1 (2026-06-09): 'mixed' = scorer's tied/zero-vote label, i.e.
+        # explicitly directionless. The executor's old binary side selection
+        # turned these into SHORTS. Never trade a pick with no direction.
+        if direction not in ("bullish", "bearish"):
+            _msg = f"Direction '{direction}' is directionless — no trade (audit C-1)"
             print(f"  {ticker}: SKIPPED — {_msg}")
             _record_block(ticker, _msg)
             continue
@@ -461,9 +471,19 @@ def run_scan(send_email: bool = True,
     except Exception as e:
         print(f"[ORACLE] Could not load directives: {e}")
 
-    # Apply ORACLE threshold adjustment
+    # Apply ORACLE threshold adjustment.
+    # AUDIT H-8/12/18/25 (2026-06-09): this is raw LLM JSON — validate + clamp.
+    # int(None) crashed the scan; a negative adjust silently LOWERED the 80
+    # floor. ORACLE may only make the gate STRICTER (0..+10), never looser.
     from config import AUTO_EXECUTE_MIN_SCORE as _BASE_MIN_SCORE
-    _effective_min_score = _BASE_MIN_SCORE + int(oracle_directives.get("confidence_threshold_adjust", 0))
+    try:
+        _raw_adj = oracle_directives.get("confidence_threshold_adjust", 0)
+        _adj = int(float(_raw_adj)) if _raw_adj is not None else 0
+    except (TypeError, ValueError):
+        print(f"[ORACLE] Ignoring non-numeric confidence_threshold_adjust: {_raw_adj!r}")
+        _adj = 0
+    _adj = max(0, min(10, _adj))   # clamp: stricter only, capped at +10
+    _effective_min_score = _BASE_MIN_SCORE + _adj
     if _effective_min_score != _BASE_MIN_SCORE:
         print(f"[ORACLE] Adjusted auto-execute threshold: {_BASE_MIN_SCORE} → {_effective_min_score}")
 

@@ -1,13 +1,25 @@
 name: Sentiment Guard
 
 on:
-  schedule:
-    # Every hour Mon–Fri, 9 AM – 4 PM ET (13:00–20:00 UTC during EDT)
-    - cron: '0 13,14,15,16,17,18,19,20 * * 1-5'
+  # ── GitHub cron DISABLED 2026-06-09 (audit H-22) ────────────────────────────
+  # This was the LAST workflow still running on an active GitHub schedule with
+  # no force-guard — a cloud path that can tighten stops / close positions,
+  # racing the local launchd AEGIS/VIGIL. Same policy as daily_scan/trail_stops/
+  # eod: launchd is the sole automated path; a bare dispatch no-ops.
+  # schedule:
+  #   - cron: '0 13,14,15,16,17,18,19,20 * * 1-5'
   workflow_dispatch:
+    inputs:
+      force:
+        description: 'Set true to ACTUALLY run. Bare dispatches no-op.'
+        required: false
+        default: 'false'
+        type: choice
+        options: ['false', 'true']
 
 jobs:
   guard:
+    if: ${{ github.event.inputs.force == 'true' }}
     runs-on: ubuntu-latest
     timeout-minutes: 10
 

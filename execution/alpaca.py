@@ -138,6 +138,19 @@ def is_active_order(o) -> bool:
     return str(getattr(o, "status", "")).lower() in ACTIVE_ORDER_STATUSES
 
 
+# ── Symbol normalization (audit CRITICAL-2, 2026-06-09) ────────────────────
+# Alpaca uses TWO symbol formats for crypto: positions come back SLASHLESS
+# ('BTCUSD') while orders carry the slash form ('BTC/USD'), and the
+# /v2/positions/{symbol} endpoint 404s on an unencoded slash. Every raw
+# `order.symbol == position.symbol` comparison silently never matches for
+# crypto — which disabled the naked-position guard, AEGIS stop matching, and
+# close_position's pre-cancel sweep for the entire asset class. Compare and
+# address positions through THIS helper, always.
+def norm_symbol(s: str) -> str:
+    """Canonical (slashless) form: 'BTC/USD' -> 'BTCUSD'; equities unchanged."""
+    return (s or "").replace("/", "")
+
+
 # ── Order-status normalization ─────────────────────────────────────────────
 # Audit C-3/C-4/C-5: Three safety controls (MAX_DAILY_TRADES counter,
 # DUSK day-trade detector, ZEUS audit) were silently broken because
@@ -320,7 +333,20 @@ def place_order(ticker: str, dollar_amount: float, direction: str,
         return {"status": "skipped", "ticker": ticker, "reason": bp_reason}
 
     mode = "LIVE" if is_live_mode() else "PAPER"
-    side = "buy" if direction == "bullish" else "sell"
+    # AUDIT C-1 (2026-06-09): direction must be EXPLICIT. The old binary
+    # `"buy" if bullish else "sell"` turned 'mixed' picks (scorer's tied/zero-
+    # vote label — explicitly directionless) into real SHORT positions with no
+    # bearish evidence behind them. Anything that isn't a clear bullish or
+    # bearish call is refused here, whatever upstream sends.
+    if direction == "bullish":
+        side = "buy"
+    elif direction == "bearish":
+        side = "sell"
+    else:
+        print(f"[APEX] {ticker} skipped — direction '{direction}' is not tradeable "
+              f"(no directional evidence; refusing to guess a side)")
+        return {"status": "skipped", "ticker": ticker,
+                "reason": f"direction '{direction}' is directionless — not traded"}
 
     # ── Long-only gate (2026-06-09) ───────────────────────────────────────
     # 60d autopsy: shorts -$1,596 / PF 0.57 over 147 round-trips vs longs
@@ -690,10 +716,13 @@ def get_positions() -> list[dict]:
         # Get ALL active orders (open + held + new + accepted)
         _all = client.get_orders(GetOrdersRequest(status=QueryOrderStatus.ALL, limit=400))
         orders = [o for o in _all if is_active_order(o)]
-        sl_tp_map    = {}   # ticker → {stop_loss, take_profit}
-        trailing_set = set()  # tickers with an active native trailing stop
+        sl_tp_map    = {}   # NORMALIZED ticker → {stop_loss, take_profit}
+        trailing_set = set()  # normalized tickers with a native trailing stop
         for o in orders:
-            sym   = o.symbol
+            # CRITICAL-2: key by norm_symbol — crypto orders are 'BTC/USD' but
+            # the positions they protect come back 'BTCUSD'; raw keys never
+            # matched, so every crypto position looked naked downstream.
+            sym   = norm_symbol(o.symbol)
             otype = str(getattr(o, "type", "")).lower()
             # After bracket fills, child orders appear as standalone open orders:
             # TP leg → OrderType.LIMIT  (limit_price set)
@@ -723,7 +752,7 @@ def get_positions() -> list[dict]:
         for p in positions:
             entry = float(p.avg_entry_price)
             sym   = p.symbol
-            known = sl_tp_map.get(sym, {})
+            known = sl_tp_map.get(norm_symbol(sym), {})
             # H-2 fix: track whether SL/TP came from the broker or was COMPUTED
             # as a fallback. Dashboard / EOD report should render "computed"
             # differently so users don't see a fake number labelled as a real stop.
@@ -749,7 +778,7 @@ def get_positions() -> list[dict]:
                 "take_profit":       tp,
                 "stop_loss_source":  "broker" if sl_from_broker else "computed",
                 "take_profit_source":"broker" if tp_from_broker else "computed",
-                "is_trailing":       sym in trailing_set,
+                "is_trailing":       norm_symbol(sym) in trailing_set,
             })
         return result
     except Exception as e:
@@ -784,7 +813,13 @@ def get_closed_trade_pnl(days: int = 60, raise_on_error: bool = False) -> list[d
         from datetime import datetime, timedelta
 
         client = _get_client()
-        after  = (datetime.now() - timedelta(days=days)).strftime("%Y-%m-%dT00:00:00Z")
+        # CRITICAL-3 (2026-06-09): Alpaca's 'after' filters on order SUBMISSION
+        # time, but swing brackets are GTC — a stop submitted 5 days ago can
+        # FILL today. Windowing the fetch on submission time made the daily
+        # realized-loss kill-switch (days=1) blind to exactly the stop-outs it
+        # exists to count. Fetch WIDE (days + 45 covers any GTC bracket life),
+        # then window the RESULTS on fill time (closed_at) below.
+        after  = (datetime.now() - timedelta(days=days + 45)).strftime("%Y-%m-%dT00:00:00Z")
 
         # CRITICAL FIX (2026-06-02): the old code fetched a SINGLE page of 500
         # orders with no pagination. A 30-day window routinely has 500+ orders,
@@ -927,6 +962,12 @@ def get_closed_trade_pnl(days: int = 60, raise_on_error: bool = False) -> list[d
                         # No longs to close → open a short lot
                         open_lots.append({"side": "short", "price": fill_px, "qty": fill_qty, "time": fill_time})
 
+        # CRITICAL-3: window on FILL time, not submission time. closed_at is
+        # "YYYY-MM-DD HH:MM" so a lexicographic date compare is exact. This is
+        # what makes days=1 (same-day lockout + daily halt) actually see GTC
+        # stop fills from brackets submitted days ago.
+        _fill_cutoff = (datetime.now() - timedelta(days=days)).strftime("%Y-%m-%d")
+        results = [r for r in results if str(r.get("closed_at", ""))[:10] >= _fill_cutoff]
         return sorted(results, key=lambda x: x["closed_at"], reverse=True)
 
     except Exception as e:
@@ -954,12 +995,14 @@ def close_position(ticker: str) -> dict:
         client = _get_client()
 
         # Cancel ALL active orders for this ticker (open + held + new + accepted)
+        # CRITICAL-2: compare via norm_symbol — crypto positions are 'BTCUSD'
+        # while their resting orders are 'BTC/USD'; a raw != skipped them all.
         try:
             all_orders = client.get_orders(GetOrdersRequest(
                 status=QueryOrderStatus.ALL, limit=400))
             cancelled = 0
             for o in all_orders:
-                if o.symbol != ticker:
+                if norm_symbol(o.symbol) != norm_symbol(ticker):
                     continue
                 if not is_active_order(o):
                     continue
@@ -978,13 +1021,15 @@ def close_position(ticker: str) -> dict:
             print(f"[close_position] {ticker} pre-cancel loop failed: {_ce}")
 
         # Close the position — retry once with a longer wait if first attempt fails
+        # CRITICAL-2: the positions endpoint is slashless ('BTCUSD'); an
+        # unencoded 'BTC/USD' 404s and the naked-guard close can never succeed.
         try:
-            client.close_position(ticker)
+            client.close_position(norm_symbol(ticker))
         except Exception as first_err:
             if "insufficient" in str(first_err).lower() or "held" in str(first_err).lower():
                 _time.sleep(1.5)
                 try:
-                    result = client.close_position(ticker)
+                    result = client.close_position(norm_symbol(ticker))
                 except Exception as _e2:
                     print(f"[ALPACA] close_position retry also failed for {ticker}: {_e2}")
                     return {"status": "error", "ticker": ticker, "message": f"Both close attempts failed: {_e2}"}
@@ -1038,23 +1083,54 @@ def tighten_stop(ticker: str, stop_pct: float = 0.015) -> dict:
         # CRITICAL audit C-2: Bracket SL legs sit in HELD (not OPEN). Querying
         # OPEN-only meant tighten_stop() stacked a new tighter stop ON TOP of
         # the old wider one — could result in duplicate exits or naked qty.
+        # CRITICAL-5 (2026-06-09): record every stop we cancel (price/qty/side)
+        # so ANY later failure can RESTORE it — the old code cancelled first
+        # and could bail out without ever placing a replacement = naked.
         active_orders = [o for o in client.get_orders(GetOrdersRequest(
                             status=QueryOrderStatus.ALL, limit=500))
                          if is_active_order(o)]
         cancelled = 0
         qty = 0
+        _cancelled_stops = []   # [(stop_price, qty, side_str)] for restore-on-failure
         for o in active_orders:
-            if o.symbol != ticker:
+            if norm_symbol(o.symbol) != norm_symbol(ticker):
                 continue
             otype = str(getattr(o, "type", "")).lower()
             if "stop" in otype and "limit" not in otype and "trailing" not in otype:
                 try:
+                    _sp = float(getattr(o, "stop_price", 0) or 0)
+                    _sq = float(o.qty or 0)
+                    _ss = "buy" if "buy" in str(getattr(o, "side", "")).lower() else "sell"
                     client.cancel_order_by_id(str(o.id))
                     cancelled += 1
+                    if _sp > 0 and _sq > 0:
+                        _cancelled_stops.append((_sp, _sq, _ss))
                     if not qty and o.qty:
                         qty = float(o.qty)
                 except Exception:
                     pass
+
+        def _restore_cancelled_stops() -> int:
+            """Re-place the stops we cancelled. Returns how many were restored."""
+            _n = 0
+            for _sp, _sq, _ss in _cancelled_stops:
+                try:
+                    client.submit_order(StopOrderRequest(
+                        symbol=ticker, qty=_sq,
+                        side=OrderSide.BUY if _ss == "buy" else OrderSide.SELL,
+                        time_in_force=TimeInForce.GTC, stop_price=_sp))
+                    _n += 1
+                except Exception as _re:
+                    print(f"[VIGIL] {ticker} stop RESTORE failed: {_re}")
+            if _n < len(_cancelled_stops):
+                try:
+                    from alerts.slack import _post
+                    _post({"text": (f"🚨 *{ticker} may be NAKED* — tighten_stop cancelled "
+                                    f"{len(_cancelled_stops)} stop(s) and only restored {_n}. "
+                                    f"Check the position NOW.")})
+                except Exception:
+                    pass
+            return _n
 
         if not qty:
             # Try to get qty from position
@@ -1065,7 +1141,11 @@ def tighten_stop(ticker: str, stop_pct: float = 0.015) -> dict:
                     break
 
         if not qty:
-            return {"status": "error", "reason": "Could not determine qty"}
+            # CRITICAL-5: we may have just cancelled the only protection.
+            # Restore it before bailing — never exit this function naked.
+            _restored = _restore_cancelled_stops() if _cancelled_stops else 0
+            return {"status": "error",
+                    "reason": f"Could not determine qty (restored {_restored} cancelled stop(s))"}
 
         # Determine if position is long or short to set correct stop side
         positions_now = get_positions()
@@ -1092,7 +1172,16 @@ def tighten_stop(ticker: str, stop_pct: float = 0.015) -> dict:
             time_in_force = TimeInForce.GTC,
             stop_price    = new_stop,
         )
-        order = client.submit_order(stop_req)
+        # CRITICAL-5: if the tighter stop is rejected, RESTORE the original
+        # stop(s) we cancelled above — never leave the position naked because
+        # a tighten attempt failed.
+        try:
+            order = client.submit_order(stop_req)
+        except Exception as _sub_err:
+            _restored = _restore_cancelled_stops() if _cancelled_stops else 0
+            return {"status": "error", "ticker": ticker,
+                    "reason": (f"tighter stop rejected ({str(_sub_err)[:120]}); "
+                               f"restored {_restored}/{len(_cancelled_stops)} original stop(s)")}
         mode  = "LIVE" if is_live_mode() else "PAPER"
         print(f"[VIGIL] [{mode}] {ticker} stop tightened → ${new_stop:.2f} "
               f"({stop_pct*100:.1f}% below ${price:.2f})")
@@ -1180,7 +1269,16 @@ def place_crypto_order(alpaca_symbol: str, dollar_amount: float,
     dollar_amount = _effective_notional
 
     mode = "LIVE" if is_live_mode() else "PAPER"
-    side = "buy" if direction in ("bullish", "long") else "sell"
+    # AUDIT C-1 (2026-06-09): same explicit-direction rule as place_order() —
+    # 'mixed'/unknown must never fall through to a short.
+    if direction in ("bullish", "long"):
+        side = "buy"
+    elif direction in ("bearish", "short"):
+        side = "sell"
+    else:
+        print(f"[APEX] {alpaca_symbol} skipped — direction '{direction}' is not tradeable")
+        return {"status": "skipped", "ticker": alpaca_symbol,
+                "reason": f"direction '{direction}' is directionless — not traded"}
 
     try:
         # Finding #10 (2026-06-08): TP LimitOrderRequest removed — crypto gets a
