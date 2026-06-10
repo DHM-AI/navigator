@@ -782,6 +782,17 @@ def trail_positions(
             # need to pass the right side (BUY to cover a short).
             trail_side = OrderSide.SELL if is_long else OrderSide.BUY
 
+            # Trailing OFF (2026-06-10 exit sweep): leave the bracket's fixed
+            # ATR stop + +12% TP in place; banking the pop beat trailing it. All
+            # safety nets above (hard-max-loss, penny-close, naked-rescue) already
+            # ran this loop, so the position stays fully protected — just untrailed.
+            try:
+                from config import ENABLE_TRAILING_STOP as _ETS
+            except ImportError:
+                _ETS = True
+            if not _ETS:
+                continue
+
             # Not profitable enough yet for trailing stop
             if pct_gain < trigger * 100:
                 continue
@@ -1136,6 +1147,15 @@ def safety_sweep() -> list:
 
             # (1) Already trailing — correct, skip (idempotent, no churn).
             if has_trailing:
+                continue
+
+            # Trailing OFF (2026-06-10): the sweep no longer upgrades un-trailed
+            # positions to trailing — they keep their fixed bracket stop + TP.
+            try:
+                from config import ENABLE_TRAILING_STOP as _ETS_SWEEP
+            except ImportError:
+                _ETS_SWEEP = True
+            if not _ETS_SWEEP:
                 continue
 
             # (2) Should be trailing but isn't — upgrade safely.

@@ -531,7 +531,18 @@ else:
 # CHECK 8 — Trailing stops active on positions up >3%
 # ══════════════════════════════════════════════════════════════════════════════
 print(f"\n{BOLD}[8/23] Trailing Stop Coverage{RESET}")
-if not alpaca_ok:
+try:
+    from config import ENABLE_TRAILING_STOP as _ZEUS_ETS
+except ImportError:
+    _ZEUS_ETS = True
+if not _ZEUS_ETS:
+    # Trailing intentionally OFF (2026-06-10 exit sweep): positions ride a fixed
+    # ATR stop + +12% TP and exit on whichever fills — by design, NOT a gap.
+    # Naked/stop coverage is Check 1's job; this check is N/A while trailing is off.
+    report.add("Trailing Stop Coverage", "PASS",
+               "Trailing intentionally OFF — fixed ATR stop + +12% TP per the exit "
+               "sweep (PFnet 1.89 vs 1.40 trailing). Stop coverage verified by Check 1.")
+elif not alpaca_ok:
     report.add("Trailing Stop Coverage", "WARN", "Alpaca not configured")
 elif not alpaca_positions:
     report.add("Trailing Stop Coverage", "PASS", "No open positions")

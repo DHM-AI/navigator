@@ -321,7 +321,24 @@ DAILY_REALIZED_LOSS_HALT_PCT = 0.03     # ...or -3% of bankroll, whichever hits 
 # The two early trims still lock in profit and move stop to breakeven.
 #
 # Set ENABLE_PARTIAL_EXIT = False to revert to single-exit mode instantly.
-ENABLE_PARTIAL_EXIT          = True
+# DISABLED 2026-06-10 (exit-policy sweep, backtest_layer4_exits.py): on the
+# top-0.5% conviction picks, the 20/20/60 partial + 3% trail stack was the WORST
+# exit tested (PFnet 1.40). A flat "+12% TP or ATR stop, no partials/no trail"
+# nearly doubled it (PFnet 1.89, +2.95%/trade, 60% win) — these conviction names
+# pop-then-fade, so banking the pop beats trimming + trailing it.
+ENABLE_PARTIAL_EXIT          = False
+
+# Trailing stops OFF for the same reason (2026-06-10): trailing hands the pop
+# back. Each position now rides its fixed bracket = ATR stop + the SWING_TP_PCT
+# take-profit, and exits on whichever fills. AEGIS still runs every safety net
+# (naked-rescue, hard-max-loss, penny-close) — it just no longer trails.
+# Set True to restore multi-level trailing.
+ENABLE_TRAILING_STOP         = False
+
+# Swing bracket take-profit = +12% (was MOVE_TARGET_PCT 20% ceiling). The 12%
+# fixed target is what won the exit sweep; MOVE_TARGET_PCT stays 20% for its
+# OTHER consumers (ORACLE/learning hit definition, ZEUS). (2026-06-10)
+SWING_TP_PCT                 = 0.12
 
 PARTIAL_EXIT_TIER1_TRIGGER   = 0.07   # fire Tier 1 at +7% gain
 PARTIAL_EXIT_TIER1_FRACTION  = 0.20   # close 20% of original position

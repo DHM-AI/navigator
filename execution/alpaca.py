@@ -424,8 +424,14 @@ def place_order(ticker: str, dollar_amount: float, direction: str,
         return {"status": "skipped", "ticker": ticker,
                 "reason": f"Price ${price:.2f} below ${MIN_PRICE:.2f} minimum (penny-stock filter)"}
 
-    # Stop loss and take profit prices — DAY trades use tighter bracket
-    _tp_pct = DAY_TRADE_TARGET_PCT if _is_day_trade else MOVE_TARGET_PCT
+    # Stop loss and take profit prices — DAY trades use tighter bracket.
+    # Swing TP = SWING_TP_PCT (+12%, the exit-sweep winner 2026-06-10), NOT the
+    # 20% MOVE_TARGET ceiling — we now bank the pop instead of trailing it.
+    try:
+        from config import SWING_TP_PCT as _SWING_TP
+    except ImportError:
+        _SWING_TP = MOVE_TARGET_PCT
+    _tp_pct = DAY_TRADE_TARGET_PCT if _is_day_trade else _SWING_TP
     _sl_pct, _effective_notional = _resolve_stop_and_size(
         dollar_amount, atr_pct, _is_day_trade, ticker)
     # Audit H1 (2026-06-02): if the ATR-rescaled notional rounds to < 1 share,
