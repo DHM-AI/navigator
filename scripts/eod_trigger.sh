@@ -37,7 +37,7 @@ echo "[$(date)] Running EOD report (ET ${H}:${M})..." >> "$LOG"
 "$PY" eod_report.py >> "$LOG" 2>&1
 echo "[$(date)] EOD report finished (exit $?)" >> "$LOG"
 
-# Daily OPTIONS (paper) summary — read-only, posts its own Slack message.
-echo "[$(date)] Running options daily report..." >> "$LOG"
-"$PY" -m options.report >> "$LOG" 2>&1
-echo "[$(date)] Options report finished (exit $?)" >> "$LOG"
+# Daily OPTIONS (paper) report REMOVED 2026-06-10 (Renato): options trading is
+# disabled (OPT_ENABLE_PAPER=False), so the report was pure Slack noise — it
+# only ever said "Closed today: none · flat · $0". Re-add `"$PY" -m options.report`
+# here if/when paper options are ever turned back on.
