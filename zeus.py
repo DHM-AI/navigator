@@ -1111,11 +1111,22 @@ try:
         issues.append("long-only gate NOT wired in agent.py pick loop")
     if "ENABLE_SHORTS" not in _insp.getsource(_alp):
         issues.append("long-only gate NOT wired in execution/alpaca.py place_order")
+    # Raw-model conviction gate (2026-06-10 walk-forward): the edge is in the raw
+    # xgb_prob top tier; verify it's set sane and actually wired into the gate.
+    try:
+        from config import MIN_XGB_PROB_TO_TRADE as _MXP
+        if _MXP and not (0.80 <= _MXP <= 0.97):
+            issues.append(f"MIN_XGB_PROB_TO_TRADE {_MXP} out of the edge band (0.80-0.97)")
+        if _MXP and "MIN_XGB_PROB_TO_TRADE" not in _insp.getsource(_ag):
+            issues.append("conviction gate set but NOT wired into agent.py")
+    except ImportError:
+        _MXP = 0.0
     if issues:
         report.add("Entry Quality Gates", "FAIL", "; ".join(issues))
     else:
+        _conv = f" · xgb_prob ≥ {_MXP:.2f}" if _MXP else ""
         report.add("Entry Quality Gates", "PASS",
-                   f"long-only ON · MIN_PRICE ${_MP:.0f} · entries {_NEB:.0f}:00-{_NEA:.0f}:00 ET only")
+                   f"long-only ON · MIN_PRICE ${_MP:.0f} · entries {_NEB:.0f}:00-{_NEA:.0f}:00 ET{_conv}")
 except ImportError as ie:
     report.add("Entry Quality Gates", "FAIL", f"gate config missing: {str(ie)[:80]}")
 except Exception as e:

@@ -133,6 +133,25 @@ def _execute_trades(picks_df: pd.DataFrame, explanations: dict,
         high_score_ok = picks_df["score"] < 0   # never true → bypass off
     confidence_ok  = picks_df.get("confidence", "Low").isin(_ALLOWED_CONFIDENCE)
     qualifies      = high_score_ok | (score_ok & confidence_ok)
+
+    # ── Raw-model conviction gate (2026-06-10, walk-forward backtest) ──────────
+    # The edge is in the RAW xgb_prob top tier, not the blended score. Require
+    # xgb_prob >= MIN_XGB_PROB_TO_TRADE as an ADDITIONAL filter — this is the
+    # only slice that cleared PF 1.3 after real costs + the exit stack. Set the
+    # config knob to 0.0 to disable. Picks lacking xgb_prob (defensive) are kept
+    # only if they already qualified, so a missing column can't widen trading.
+    try:
+        from config import MIN_XGB_PROB_TO_TRADE as _MIN_PROB
+    except ImportError:
+        _MIN_PROB = 0.0
+    if _MIN_PROB > 0 and "xgb_prob" in picks_df.columns:
+        conviction_ok = picks_df["xgb_prob"].fillna(0) >= _MIN_PROB
+        _pre = int(qualifies.sum())
+        qualifies = qualifies & conviction_ok
+        _post = int(qualifies.sum())
+        if _pre != _post:
+            print(f"[THEMIS] Conviction gate: {_pre} → {_post} pick(s) "
+                  f"(xgb_prob ≥ {_MIN_PROB:.2f} — the only tier with after-cost edge)")
     auto_picks     = picks_df[qualifies]
 
     # Log what got dropped — and split the reason (low conf vs below high-score bypass)

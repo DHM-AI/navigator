@@ -354,6 +354,19 @@ HIGH_SCORE_BYPASS_THRESHOLD = 85   # Low-conf trades only if model is REALLY sur
 # confidence picks. Set True to re-enable the score≥85 Low-conf model-only path.
 ENABLE_HIGH_SCORE_BYPASS    = False
 
+# ── Raw-model conviction gate (2026-06-10, walk-forward backtest) ──────────────
+# The 3-year walk-forward (423k OOS predictions) settled the edge question: the
+# edge lives in the RAW XGBoost probability, NOT the blended score the live
+# system gates on. After the REAL exit stack + trading costs:
+#   raw-prob top 0.5% (xgb_prob ≳ 0.90) → PF 1.40 / +0.7% per trade  ✅ clears bar
+#   top 2%  → PF 1.24   ·   top 5% → PF 1.12     ✗ do NOT clear
+# So trade ONLY the high-conviction model tier. This is an ADDITIONAL required
+# filter on top of every existing guard (long-only, $20 floor, 10-13 ET window,
+# vol filter, dedup, caps). Set to 0.0 to disable (revert to score-only gating).
+# ⚠ The PF 1.40 was measured in a 2023-25 BULL market and is frictionless-halved
+# by the exits — treat as a PAPER hypothesis to confirm forward, not a green light.
+MIN_XGB_PROB_TO_TRADE       = 0.90
+
 # ── Paths ─────────────────────────────────────────────────────────────────────
 LOGS_DIR            = "logs"
 PREDICTIONS_CSV     = "logs/predictions.csv"   # legacy, kept for compat
