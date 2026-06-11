@@ -714,12 +714,15 @@ def run_scan(send_email: bool = True,
     print(f"{'='*62}\n")
 
     # ── Slack scan digest ─────────────────────────────────────────────────────
-    # Post the per-scan summary to Slack (top picks, or "no setups above threshold").
-    # send_daily_digest() existed in alerts/slack.py but was NEVER wired in — so
-    # every scan ran silently and the only Slack traffic was trade alerts + AEGIS.
-    # Now each scan reports (gated by send_email so --no-email suppresses it).
-    # (Renato 2026-06-08)
-    if send_email:
+    # Per-scan summary to Slack. OFF by default (Renato 2026-06-11): the scan runs
+    # every ~30 min so this fired all day. Trade fills, the EOD summary, and
+    # health/ZEUS reports still post; only this noisy per-scan digest is gated.
+    # Flip SLACK_SCAN_DIGEST=True in config to restore it.
+    try:
+        from config import SLACK_SCAN_DIGEST as _SCAN_DIGEST
+    except ImportError:
+        _SCAN_DIGEST = False
+    if send_email and _SCAN_DIGEST:
         try:
             send_daily_digest(picks_df, explanations)
         except Exception as _de:

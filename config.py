@@ -99,6 +99,13 @@ MONTHLY_TARGET_PCT  = 0.10   # 10% per month target return
 
 # ── Prediction ────────────────────────────────────────────────────────────────
 MIN_SCORE_TO_ALERT  = 50
+
+# Per-scan Slack digest ("📊 Market Scan — top 10 setups"). OFF (Renato 2026-06-11):
+# the scan runs every ~30 min, so this posted all day long and was pure noise
+# (most flagged setups never trade). You still get the alerts that matter — real
+# trade fills (send_trade_alert), the 4:15 EOD summary, and health/ZEUS reports.
+# Set True to bring the per-scan digest back.
+SLACK_SCAN_DIGEST   = False
 TOP_N_CLAUDE_ANALYSIS = 5
 MOVE_TARGET_PCT     = 0.20   # 20% ceiling TP — trailing stops handle normal exits at 3-7%
 
