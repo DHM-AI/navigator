@@ -257,13 +257,13 @@ MIN_STOCK_PRICE        = MIN_PRICE   # single source of truth — alias of MIN_P
 # volatility, and stop-runs. Skip it: no NEW entries before NO_ENTRY_BEFORE_ET.
 # (Scans still RUN at the open for visibility — only ENTRIES are gated.)
 # ── Friday flatten — NO weekend holds (Renato 2026-06-12) ─────────────────────
-# Close ALL equity positions every Friday 1h before the close (3:00 PM ET) so
-# nothing carries weekend gap risk. Runs via com.illuminati.friday_flatten
-# (launchd, Fri 1:00 PM MT = 3:00 PM ET) + friday_flatten.py. Crypto is held
-# (it trades 24/7 — no weekend gap). Pairs with BLOCK_FRIDAY_PM_ENTRIES so no
-# fresh Friday position is opened only to be flattened minutes later.
+# Close ALL equity positions every Friday at NOON ET so nothing carries weekend
+# gap risk. Runs via com.illuminati.friday_flatten (launchd, Fri 10:00 AM MT =
+# 12:00 PM ET) + friday_flatten.py. Crypto is held (24/7 — no weekend gap).
+# Pairs with FRIDAY_ENTRY_CUTOFF_ET=12.0 so by noon Friday the book is flat and
+# no new position opens. (Moved 3 PM → noon, Renato 2026-06-12.)
 CLOSE_ALL_FRIDAY        = True
-FRIDAY_FLATTEN_ET       = 15.0   # 3:00 PM ET — 1h before the 4:00 PM close
+FRIDAY_FLATTEN_ET       = 12.0   # 12:00 PM ET — flatten the whole book by noon
 
 NO_ENTRY_BEFORE_ET      = 10.0   # 10:00 AM ET — no new entries in the first 30 min
 # TIGHTENED 15.5 -> 13.0 on 2026-06-09 (60d autopsy): afternoon entries bleed.

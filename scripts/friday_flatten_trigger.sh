@@ -1,8 +1,8 @@
 #!/bin/bash
 # Illuminati — Mac launchd FRIDAY-FLATTEN trigger
-# Closes ALL equity positions every Friday ~3:00 PM ET (1h before the close) so
-# nothing carries weekend gap risk (Renato's rule, 2026-06-12).
-# Launched by com.illuminati.friday_flatten.plist at 13:00 Mountain (= 3:00 PM ET;
+# Closes ALL equity positions every Friday at NOON ET so nothing carries weekend
+# gap risk (Renato's rule, 2026-06-12; moved 3 PM → noon).
+# Launched by com.illuminati.friday_flatten.plist at 10:00 Mountain (= 12:00 PM ET;
 # MT is a constant 2h behind ET, DST-safe). The ET window gate below is the real
 # guard — a coalesced/late wake outside the window is skipped, and friday_flatten.py
 # itself re-checks Friday + window + market-open before closing anything.
@@ -17,11 +17,11 @@ echo "[$(date)] FRIDAY-FLATTEN trigger fired" >> "$LOG"
 DOW=$(date +%u)
 if [ "$DOW" -ne 5 ]; then echo "[$(date)] not Friday (dow=$DOW) — skip" >> "$LOG"; exit 0; fi
 
-# Only inside ~2:55-3:45 PM ET. Well before the 4 PM close so market orders fill
-# same-day; never after hours. 10# forces base-10 (no octal parse on 08/09).
+# Only inside ~11:50 AM-12:45 PM ET (around the noon flatten). Well before the
+# 4 PM close so market orders fill same-day. 10# forces base-10 (no octal parse).
 H=$(TZ="America/New_York" date +%H); M=$(TZ="America/New_York" date +%M)
 T=$((10#$H*60+10#$M))
-if [ "$T" -lt 895 ] || [ "$T" -gt 945 ]; then
+if [ "$T" -lt 710 ] || [ "$T" -gt 765 ]; then
   echo "[$(date)] outside flatten window (ET ${H}:${M}) — skip" >> "$LOG"; exit 0
 fi
 
