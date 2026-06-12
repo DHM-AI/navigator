@@ -937,14 +937,38 @@ except Exception as e:
 print(f"\n{BOLD}[19/23] Weekend-Gap Protection{RESET}")
 try:
     from config import BLOCK_FRIDAY_PM_ENTRIES, FRIDAY_ENTRY_CUTOFF_ET
+    _wg = []
     if BLOCK_FRIDAY_PM_ENTRIES:
-        report.add("Weekend-Gap Protection", "PASS",
-                   f"No new entries after {FRIDAY_ENTRY_CUTOFF_ET:.0f}:00 ET Fridays "
-                   f"— stops can't cover Monday gaps")
+        _wg.append(f"no entries after {FRIDAY_ENTRY_CUTOFF_ET:.0f}:00 ET Fri")
     else:
-        report.add("Weekend-Gap Protection", "WARN",
-                   "BLOCK_FRIDAY_PM_ENTRIES=False — Friday-afternoon entries allowed "
-                   "(weekend gap risk; HOOD/WOLF cost -$1,093 on 2026-06-01)")
+        _wg.append("⚠ BLOCK_FRIDAY_PM_ENTRIES=False (entries allowed)")
+    # Friday flatten (Renato 2026-06-12): close ALL positions Fri ~3 PM ET. If the
+    # rule is ON, its launchd job MUST be loaded or positions carry over the weekend.
+    _flat_issue = None
+    try:
+        from config import CLOSE_ALL_FRIDAY, FRIDAY_FLATTEN_ET
+        if CLOSE_ALL_FRIDAY:
+            import subprocess as _sp, platform as _pf
+            _loaded = True
+            if _pf.system() == "Darwin":
+                _ll = _sp.run(["launchctl", "list"], capture_output=True, text=True, timeout=5).stdout
+                _loaded = "com.illuminati.friday_flatten" in _ll
+            if _loaded:
+                _wg.append(f"flatten-all Fri {FRIDAY_FLATTEN_ET:.0f}:00 ET (no weekend holds)")
+            else:
+                _flat_issue = ("CLOSE_ALL_FRIDAY=True but com.illuminati.friday_flatten "
+                               "is NOT loaded — positions WILL carry over the weekend")
+        else:
+            _wg.append("flatten OFF (CLOSE_ALL_FRIDAY=False)")
+    except ImportError:
+        pass
+    if _flat_issue:
+        report.add("Weekend-Gap Protection", "FAIL", _flat_issue)
+    elif BLOCK_FRIDAY_PM_ENTRIES:
+        report.add("Weekend-Gap Protection", "PASS", " · ".join(_wg))
+    else:
+        report.add("Weekend-Gap Protection", "WARN", " · ".join(_wg) +
+                   " (HOOD/WOLF cost -$1,093 on 2026-06-01)")
 except ImportError:
     report.add("Weekend-Gap Protection", "FAIL",
                "BLOCK_FRIDAY_PM_ENTRIES not in config.py — weekend-gap guard missing")
