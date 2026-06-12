@@ -273,9 +273,10 @@ NO_ENTRY_BEFORE_ET      = 10.0   # 10:00 AM ET — no new entries in the first 3
 # to develop; afternoon entries get stopped in the close chop instead.
 NO_ENTRY_AFTER_ET       = 13.0   # 1:00 PM ET — last entry of the day (all weekdays)
 BLOCK_FRIDAY_PM_ENTRIES = True   # swing: no new entries Friday afternoon (weekend gap guard)
-FRIDAY_ENTRY_CUTOFF_ET  = 14.0   # Friday entries stop at 2:00 PM ET (moot while
-                                 # NO_ENTRY_AFTER_ET=13.0 is tighter; kept as a
-                                 # backstop if the EOD cutoff is ever loosened)
+FRIDAY_ENTRY_CUTOFF_ET  = 12.0   # Friday entries stop at NOON ET (Renato 2026-06-12).
+                                 # Tighter than the daily NO_ENTRY_AFTER_ET=13.0, so on
+                                 # Fridays nothing new opens after 12:00 — gives a half-day
+                                 # of room before the 3 PM flatten, no late-Friday entries.
 
 # ── Long-only mode (added 2026-06-09) ─────────────────────────────────────────
 # 60d autopsy: SHORTS lost -$1,596 over 147 round-trips (47% win, PF 0.57,
