@@ -59,14 +59,37 @@ def _market_hours(now_et) -> bool:
 
 
 def _latest_scan_age_min():
-    """(status, age_minutes) — status in {ok, nodata, nokey}."""
+    """(status, age_minutes) — status in {ok, nodata, nokey}.
+
+    Prefers the dedicated `system_state.last_scan_at` heartbeat, which the scanner
+    stamps on EVERY run (even idle scans that upsert no predictions). Falls back to
+    max(predictions.created_at) when that table/row isn't present yet, so this works
+    both before and after the migration is applied (Codex review 2026-06-30). The
+    old created_at signal froze when scans re-picked the same tickers."""
     url = os.environ.get("SUPABASE_URL")
     key = os.environ.get("SUPABASE_SERVICE_KEY") or os.environ.get("SUPABASE_KEY")
     if not url or not key:
         return ("nokey", None)
+    H = {"apikey": key, "Authorization": f"Bearer {key}"}
+    # 1) preferred — dedicated per-scan heartbeat
+    try:
+        r = requests.get(
+            f"{url}/rest/v1/system_state",
+            headers=H,
+            params={"select": "value", "key": "eq.last_scan_at", "limit": 1},
+            timeout=20,
+        )
+        if r.status_code == 200:
+            rows = r.json()
+            if rows and rows[0].get("value"):
+                dt = _parse_ts(rows[0]["value"])
+                return ("ok", (datetime.now(timezone.utc) - dt).total_seconds() / 60.0)
+    except Exception:
+        pass
+    # 2) fallback — newest prediction write (works until system_state exists)
     r = requests.get(
         f"{url}/rest/v1/predictions",
-        headers={"apikey": key, "Authorization": f"Bearer {key}"},
+        headers=H,
         params={"select": "created_at", "order": "created_at.desc", "limit": 1},
         timeout=20,
     )
