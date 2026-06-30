@@ -419,28 +419,41 @@ if not db_ok:
     report.add("Daily Scan (ARGUS)", "WARN", "Supabase not configured — cannot verify")
 else:
     try:
-        preds_today = db.load_predictions_for_date(today)
-        n = len(preds_today)
-        is_weekday  = now.weekday() < 5
-
-        if n == 0 and is_weekday:
-            # Check if we have predictions from yesterday as a freshness fallback
-            yesterday  = (now - timedelta(days=1)).strftime("%Y-%m-%d")
-            preds_yest = db.load_predictions_for_date(yesterday)
-            if preds_yest:
-                report.add("Daily Scan (ARGUS)", "WARN",
-                           f"No predictions for today ({today}) — scan may not have run yet. "
-                           f"Yesterday had {len(preds_yest)} predictions.")
-            else:
-                report.add("Daily Scan (ARGUS)", "FAIL",
-                           f"No predictions for today or yesterday — ARGUS may be broken")
-        elif n == 0 and not is_weekday:
-            report.add("Daily Scan (ARGUS)", "PASS",
-                       f"Weekend — no predictions expected ({today})")
+        # ARGUS freshness, robust to WHEN ZEUS runs. Predictions are dated by ET
+        # trading day and the scanner runs 9:30 AM–3:30 PM ET — so a pre-market or
+        # nightly ZEUS run (the cloud audit runs ~2:40 AM ET) legitimately sees ZERO
+        # predictions for the not-yet-traded "today". The OLD check used a UTC `today`
+        # and false-alarmed "ARGUS may not have run yet" EVERY night (2026-06-30 — the
+        # exact Slack alert Renato saw). Fix: judge by the most recent day that ACTUALLY
+        # has predictions (walk back over weekend/holiday gaps); only WARN if it's mid
+        # scan-window on a weekday with nothing today; only FAIL on a ~week-long silence.
+        try:
+            from zoneinfo import ZoneInfo
+            et = datetime.now(ZoneInfo("America/New_York"))
+        except Exception:
+            et = now
+        last_day, last_n, last_top = None, 0, 0
+        for _i in range(6):                       # walk back over weekend/holiday gaps
+            _d = (et - timedelta(days=_i)).strftime("%Y-%m-%d")
+            _p = db.load_predictions_for_date(_d)
+            if _p:
+                last_day, last_n = _d, len(_p)
+                last_top = max(x.get("score", 0) for x in _p)
+                break
+        et_frac    = et.hour + et.minute / 60.0
+        today_str  = et.strftime("%Y-%m-%d")
+        mid_window = et.weekday() < 5 and 14.0 <= et_frac <= 16.0   # weekday, mid/late scan window
+        if last_n == 0:
+            report.add("Daily Scan (ARGUS)", "FAIL",
+                       "No predictions in the last 6 days — ARGUS may be broken")
+        elif mid_window and last_day != today_str:
+            report.add("Daily Scan (ARGUS)", "WARN",
+                       f"Mid scan-window ({et:%H:%M} ET) but no predictions yet today — "
+                       f"latest: {last_n} on {last_day}. Check the scanner.")
         else:
-            latest_score = max(p.get("score", 0) for p in preds_today)
+            _when = "today" if last_day == today_str else f"last trading day {last_day}"
             report.add("Daily Scan (ARGUS)", "PASS",
-                       f"{n} predictions written today · top score: {latest_score:.0f}")
+                       f"{last_n} predictions ({_when}) · top score: {last_top:.0f}")
     except Exception as e:
         report.add("Daily Scan (ARGUS)", "FAIL", str(e)[:100])
 
