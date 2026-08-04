@@ -373,6 +373,14 @@ except Exception as e:
 # 8. DASHBOARD AVAILABILITY
 # ══════════════════════════════════════════════════════════════════════════════
 print(f"\n{BOLD}[8/9] Dashboard API Health{RESET}")
+# ⛔⛔ POLARITY INVERTED 2026-08-04 — a 401 here is the CORRECT answer.
+# /api/dashboard was gated behind DASHBOARD_TOKEN on 2026-08-03. This check used
+# to PASS on `HTTP 200 and '"account"' in body` — i.e. it passed precisely when it
+# could read live account state off a public URL, and failed once that stopped
+# being possible. It is the same defect ZEUS check 17 had; see zeus.py.
+# ⭐ The old success condition is now the alarm: finding "account" in an
+#    unauthenticated response means the gate is gone.
+# ⛔ Do not "restore" the 200 assertion to make this green.
 try:
     import urllib.request, urllib.error
     _DASH_URL = "https://illuminati-dashboard.pages.dev/api/dashboard"
@@ -380,18 +388,35 @@ try:
     try:
         with urllib.request.urlopen(req, timeout=15) as resp:
             _code = resp.getcode()
+            _ctype = resp.headers.get("Content-Type") or ""
             _body = resp.read(200).decode("utf-8", errors="ignore")
-            if _code == 200 and '"account"' in _body:
-                report.add("Dashboard API", "PASS",
-                           f"HTTP 200 — data confirmed in response")
+            if _code == 200 and _ctype.startswith("text/html"):
+                report.add("Dashboard API", "FAIL",
+                           "/api/dashboard is NOT ROUTED — 200 text/html SPA fallback "
+                           "is answering, the Function is gone")
+            elif _code == 200:
+                report.add("Dashboard API", "FAIL",
+                           "🚨 HTTP 200 UNAUTHENTICATED" +
+                           (" with account data in the body" if '"account"' in _body else "") +
+                           " — the DASHBOARD_TOKEN gate is GONE and live account state "
+                           "is public. Redeploy functions/api/dashboard.js.")
             else:
-                report.add("Dashboard API", "WARN",
-                           f"HTTP {_code} but response looks empty")
+                report.add("Dashboard API", "FAIL",
+                           f"unexpected HTTP {_code} (expected 401 = gated)")
     except urllib.error.HTTPError as he:
-        report.add("Dashboard API", "FAIL",
-                   f"HTTP {he.code} — dashboard may be returning 1102/503")
+        if he.code == 401:
+            report.add("Dashboard API", "PASS",
+                       "HTTP 401 — Function alive and the DASHBOARD_TOKEN gate is enforced")
+        elif he.code == 503:
+            report.add("Dashboard API", "FAIL",
+                       "HTTP 503 — DASHBOARD_TOKEN is not set on Cloudflare Pages, so "
+                       "close-all / close-position are refused too")
+        else:
+            report.add("Dashboard API", "FAIL",
+                       f"HTTP {he.code} — dashboard may be returning 1102/503")
     except urllib.error.URLError as ue:
-        report.add("Dashboard API", "FAIL", f"Network error: {str(ue)[:80]}")
+        report.add("Dashboard API", "WARN",
+                   f"Network error, gate unverified: {str(ue)[:80]}")
 except Exception as e:
     report.add("Dashboard API", "WARN", f"Check skipped: {str(e)[:80]}")
 
