@@ -232,13 +232,40 @@ def run() -> dict:
     except Exception:
         pass
 
+    # ⛔⛔ INLINE RETRAIN REMOVED 2026-08-04 — THIS IS WHY ORACLE NEVER FINISHED.
+    # This block called model.trainer.train() inline, inside the CI job. A full
+    # XGBoost retrain takes far longer than the workflow timeout, so every
+    # scheduled ORACLE run since at least 2026-07-29 was killed here — after the
+    # learnings were saved (line ~219), which is exactly why the learning
+    # timestamps stayed fresh and the failure stayed invisible. GitHub reports a
+    # timeout kill as "cancelled", not "failure", so it never alerted either.
+    #
+    # Three independent reasons not to put it back:
+    #  1. GENESIS owns retraining — com.illuminati.genesis, first Monday monthly.
+    #     Two writers of model/saved/xgb_model.pkl is a race nobody wants.
+    #  2. It was WASTED WORK even when it "worked": oracle.yml does not commit
+    #     model artifacts (only monthly_retrain.yml does), so the retrain wrote a
+    #     model onto an ephemeral runner disk and threw it away.
+    #  3. Auto-retrain was deliberately PAUSED after the 2026-05-27 retrain
+    #     backtested better (AUC 0.65 -> 0.76) and then LOST live immediately.
+    #     A better backtest is necessary, not sufficient.
+    # And the trigger was near-permanent: measured directional hit rate is
+    # ~47-50%, so `hit_rate < 0.50` fired almost every night — a nightly
+    # retrain treadmill, which is the overfit trap that pause exists to prevent.
+    #
+    # ⇒ ORACLE now REPORTS the condition and lets GENESIS act on it.
     if hit_rate < 0.50 and len(evaluated) >= 20:
-        print("[ORACLE] Hit rate below 50% — triggering model retrain...")
+        _msg = (f"[ORACLE] Hit rate {hit_rate:.1%} < 50% on {len(evaluated)} evaluated "
+                f"rows — model underperforming. NOT retraining here (GENESIS owns "
+                f"retraining, first Monday monthly). Retrain deliberately stays a "
+                f"human decision: see the 2026-05-27 overfit precedent.")
+        print(_msg)
         try:
-            from model.trainer import train
-            train(force_refetch=False)
-        except Exception as e:
-            print(f"[ORACLE] Retrain failed: {e}")
+            from alerts.slack import _post
+            _post({"text": f"⚠️ *ORACLE* — hit rate {hit_rate:.1%} on {len(evaluated)} "
+                           f"rows (<50%). Flagging only; GENESIS owns the retrain."})
+        except Exception:
+            pass
 
     return record
 

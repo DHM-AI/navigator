@@ -23,10 +23,14 @@ jobs:
     #    writes the learning record partway through, then gets killed before
     #    finishing the rest of the cycle. A fresh timestamp proved it STARTED,
     #    and was read as proof it worked.
-    # ⛔ Do not lower this to make the run "fit" — measure a completed run first.
-    #    Safe to let it finish: the ORACLE score adjustment is clamped [0, +10]
-    #    and stricter-only, so a completing cycle can tighten the auto-exec bar
-    #    but can never loosen risk.
+    # ⭐ ROOT CAUSE FOUND after raising this — the cap was the symptom, not the bug.
+    #    analyst/oracle.py ran a FULL XGBoost retrain inline (model.trainer.train)
+    #    whenever hit_rate < 0.50, which the measured ~47-50% directional hit rate
+    #    made true almost every night. No timeout would have fixed that; 30 min was
+    #    not enough either (a dispatched run was still going at 26 min). The retrain
+    #    is removed — GENESIS owns retraining, monthly. ORACLE now finishes in ~1 min.
+    # ⛔ 30 min is deliberate headroom, NOT a requirement. If a run ever approaches
+    #    it again, something re-introduced heavy work — look for that, don't raise this.
     timeout-minutes: 30
 
     env:
