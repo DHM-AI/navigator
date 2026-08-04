@@ -132,7 +132,33 @@ def _execute_trades(picks_df: pd.DataFrame, explanations: dict,
         high_score_ok = picks_df["score"] >= HIGH_SCORE_BYPASS_THRESHOLD
     else:
         high_score_ok = picks_df["score"] < 0   # never true → bypass off
-    confidence_ok  = picks_df.get("confidence", "Low").isin(_ALLOWED_CONFIDENCE)
+    # ⛔⛔ CONFIDENCE RECOMPUTED FROM THE FINAL SCORE — 2026-08-04. THIS IS WHY THE
+    # SYSTEM PLACED ZERO TRADES. predictor.py derives `confidence` from the blended
+    # score (>=80 High, >=65 Medium, else Low) — but `score` is then mutated THREE
+    # more times downstream and confidence was never refreshed:
+    #     agent.py:657  ORACLE direction bias   score +3 (favored) / -2 (other)
+    #     agent.py:671  options-flow enrichment overwrites score outright
+    # So a pick could finish at score 69 while still carrying the "Low" that was
+    # computed when its pre-bump score was 64. The gate needs score >= MIN *AND*
+    # confidence >= Medium, so those picks sat in a dead zone: high enough to
+    # qualify, permanently stale-Low, blocked every scan. Measured live on
+    # 2026-08-04 — BSX 69/Low, BRK-B 68/Low, T 66/Low, all skipped, "0 trades
+    # placed" on every scan of the day.
+    # ⛔ The documented escape hatch does NOT rescue this: HIGH_SCORE_BYPASS_THRESHOLD
+    #    is 85 and is disabled, and with xgb_prob topping out at ~0.576 the blended
+    #    score (0.70*prob + 0.30*sent)*100 CANNOT exceed ~70 — so 85, and the
+    #    "High" band at 80, are both mathematically unreachable on this model.
+    # ⭐ Derive it here, after every mutation, using predictor.py's own thresholds.
+    #    Two fields that describe the same pick must be computed from the same number.
+    # ⛔ pandas only — agent.py does NOT import numpy. np.where here would compile
+    #    clean and NameError at runtime, which is precisely how _effective_notional
+    #    silently blocked every order for six trading days (2026-06-30 -> 07-06).
+    _final_score = pd.to_numeric(picks_df["score"], errors="coerce").fillna(0)
+    picks_df["confidence"] = pd.Series(
+        ["High" if s >= 80 else "Medium" if s >= 65 else "Low" for s in _final_score],
+        index=picks_df.index,
+    )
+    confidence_ok  = picks_df["confidence"].isin(_ALLOWED_CONFIDENCE)
     qualifies      = high_score_ok | (score_ok & confidence_ok)
 
     # ── Raw-model conviction gate (2026-06-10, walk-forward backtest) ──────────
