@@ -22,7 +22,7 @@ Checks:
  14.  ENABLE_OPTIONS is False (opt-in safety — default True = stray orders)
  15.  DAY trade bracket is tighter than swing (stop < 3%, target < 20%)
  16.  Partial exit fractions sum < 1.0 (T1+T2 must leave a remaining tranche)
- 17.  Dashboard API health (live Cloudflare endpoint returns 200)
+ 17.  Dashboard API gate (live endpoint must answer 401 — a 200 = the gate is gone)
  18.  Mac launchd jobs are healthy (exit code 0, not 126)
  19.  Weekend-gap protection on (no new Friday-PM entries)
  20.  Entry cap per ticker on (blocks accumulating into a loser)
@@ -857,47 +857,72 @@ except Exception as e:
 # CHECK 17 — Dashboard API is reachable and returns valid JSON
 # ══════════════════════════════════════════════════════════════════════════════
 print(f"\n{BOLD}[17/23] Dashboard API Health{RESET}")
-# RETRY 2026-06-02: a SINGLE ping false-alarmed. The worker returns 503 ONLY on a
-# cold compute with no stale cache yet (first hit after >10 min idle + a transient
-# upstream hiccup); the very next call serves 200. A one-shot check caught that
-# cold start and warned even though the dashboard was healthy. Retry up to 3x —
-# the first ping also warms the worker, so attempt 2 reflects steady state. A
-# stale-fallback 200 (X-Illuminati-Stale) still counts as healthy (degraded-but-up).
+# ⛔⛔ POLARITY INVERTED 2026-08-04 — READ THIS BEFORE "FIXING" A 401 HERE.
+# Until 2026-08-03 /api/dashboard was PUBLIC and this check asserted HTTP 200.
+# That endpoint serves live account state — portfolio_value, buying_power, open
+# positions, closed trades, realized P&L and the model's picks — so it is now
+# gated behind DASHBOARD_TOKEN. The old check then failed nightly with
+# "genuine outage / 1102" while the dashboard was perfectly healthy.
+#
+# ⭐ The gate makes a BETTER check possible, so this no longer measures liveness
+#    alone — it asserts the lock is still on:
+#      401 → PASS. The Function is alive AND rejecting anonymous callers.
+#      200 → FAIL, LOUDLY. Not an outage — the opposite. A 200 means the gate is
+#            GONE and account data is being served to anyone with the URL. This
+#            is the regression worth waking up for, and the old check would have
+#            called it green.
+#      503 → FAIL. requireAuth returns 503 when DASHBOARD_TOKEN is unset on
+#            Pages. The lock has no key: every privileged action (close-all,
+#            close-position) is refused too. Not a cold start — the gate runs at
+#            the top of onRequest, before any compute the old comment described.
+#      text/html → FAIL. The Function is not routed at all and the SPA fallback
+#            is answering. Status alone cannot see this; check the content type.
+# ⛔ Retries are for NETWORK faults only. Never retry a 200 hoping for a 401 —
+#    one unauthenticated 200 is already a leak, and retrying until it agrees with
+#    you is how a check learns to always pass.
 import time as _time
+import urllib.request, urllib.error
 _dashboard_url = "https://illuminati-dashboard.pages.dev/api/dashboard"
-_last = None
-_ok = False
-_stale_served = False
-for _attempt in range(1, 4):
-    try:
-        import urllib.request
-        _req = urllib.request.Request(_dashboard_url, headers={"User-Agent": "ZEUS-health"})
-        with urllib.request.urlopen(_req, timeout=10) as _r:
-            _status = _r.status
-            _stale_served = _r.headers.get("X-Illuminati-Stale") == "1"
-            _r.read(64)
-        _last = f"HTTP {_status}"
-        if _status == 200:
-            _ok = True
-            break
-    except Exception as e:
-        _last = str(e)[:80]
-        # HTTP 503 raised as HTTPError — keep retrying (likely cold start)
-    if _attempt < 3:
-        _time.sleep(2)
-if _ok:
-    _detail = "illuminati-dashboard.pages.dev responded HTTP 200"
-    if _attempt > 1:
-        _detail += f" (after {_attempt} tries — cold start warmed)"
-    if _stale_served:
-        _detail += " · serving stale cache (upstream degraded but UP)"
-    report.add("Dashboard API", "PASS", _detail)
-else:
-    # 3 straight failures = a real outage, not a cold start
-    _is_net = "urlopen" in (_last or "") or "timed out" in (_last or "").lower()
-    report.add("Dashboard API", "WARN" if _is_net else "FAIL",
-               f"Dashboard unhealthy after 3 tries: {_last} "
-               f"({'network unavailable from runner' if _is_net else 'genuine outage / 1102'})")
+
+
+def _probe_dashboard_gate(url):
+    """Return (verdict, detail). Pure w.r.t. ZEUS state so it can be tested
+    against a known-bad URL — see the self-test below."""
+    _last = None
+    for _attempt in range(1, 4):
+        try:
+            _req = urllib.request.Request(url, headers={"User-Agent": "ZEUS-health"})
+            with urllib.request.urlopen(_req, timeout=10) as _r:
+                _status, _ctype = _r.status, (_r.headers.get("Content-Type") or "")
+                _r.read(64)
+            if _status == 200:
+                if _ctype.startswith("text/html"):
+                    return ("FAIL", "/api/dashboard is NOT ROUTED — a 200 text/html SPA "
+                                    "fallback is answering, so the Function is gone")
+                return ("FAIL", "🚨 /api/dashboard answered HTTP 200 UNAUTHENTICATED — the "
+                                "token gate is GONE and live account state (portfolio value, "
+                                "buying power, positions, trades, picks) is public. Redeploy "
+                                "the gate; see functions/api/dashboard.js.")
+            return ("FAIL", f"unexpected HTTP {_status} (expected 401 = gated)")
+        except urllib.error.HTTPError as e:
+            if e.code == 401:
+                return ("PASS", "/api/dashboard → 401 unauthenticated — Function alive and "
+                                "the DASHBOARD_TOKEN gate is enforced")
+            if e.code == 503:
+                return ("FAIL", "/api/dashboard → 503: DASHBOARD_TOKEN is NOT SET on "
+                                "Cloudflare Pages. The gate cannot authorise anyone, so "
+                                "close-all / close-position are refused too.")
+            _last = f"HTTP {e.code}"
+        except Exception as e:
+            _last = str(e)[:80]
+        if _attempt < 3:
+            _time.sleep(2)
+    return ("WARN", f"dashboard unreachable after 3 tries: {_last} "
+                    f"(network unavailable from runner — liveness unknown, gate unverified)")
+
+
+_verdict, _detail = _probe_dashboard_gate(_dashboard_url)
+report.add("Dashboard API", _verdict, _detail)
 
 
 # ══════════════════════════════════════════════════════════════════════════════
