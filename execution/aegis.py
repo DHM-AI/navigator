@@ -270,11 +270,21 @@ def trail_positions(
             # Runs BEFORE partial-exit / trailing logic so naked LOSING positions
             # get rescued too (those don't qualify for any other branch).
             # ══════════════════════════════════════════════════════════════════
-            _has_stop = any(
-                "stop" in str(getattr(o, "type", "")).lower()
+            # QTY-AWARE coverage (2026-06-16 fix): this used to check only whether
+            # ANY stop existed for the ticker, so shares ADDED to a position that
+            # already had a stop (a manual buy, or the system averaging in) stayed
+            # NAKED forever — the old stop's qty was < the new position qty. Now we
+            # sum the covered qty on the protective side and rescue the DIFFERENCE.
+            _want_side = "sell" if is_long else "buy"
+            _covered_qty = sum(
+                float(getattr(o, "qty", 0) or 0)
                 for o in ticker_orders
+                if "stop" in str(getattr(o, "type", "")).lower()
+                and str(getattr(getattr(o, "side", ""), "value",
+                                getattr(o, "side", ""))).lower() == _want_side
             )
-            if not _has_stop:
+            _naked_qty = qty - _covered_qty
+            if _naked_qty > 0.0001:
                 _entry_px = float(p.get("avg_entry_price", 0) or 0)
                 _cur_px   = float(p.get("current_price", _entry_px))
                 if _entry_px > 0 and _cur_px > 0 and qty > 0:
@@ -311,15 +321,23 @@ def trail_positions(
                     # of the position gets covered (previously it stayed fully
                     # naked forever because every retry failed).
                     import math as _math
-                    _is_fractional = qty != int(qty)
-                    _stop_qty = int(_math.floor(qty)) if _is_fractional else qty
+                    _is_fractional = _naked_qty != int(_naked_qty)
+                    _stop_qty = int(_math.floor(_naked_qty))
                     if _stop_qty <= 0:
-                        # Pure-fractional (e.g. 0.7 BTC) — close instead of stop
-                        try:
-                            print(f"[AEGIS] {ticker} pure-fractional naked → close_position")
-                            close_position(ticker)
-                        except Exception as _cf:
-                            print(f"[AEGIS] {ticker} fractional close failed: {_cf}")
+                        if _covered_qty <= 0 and qty < 1:
+                            # WHOLE position is pure-fractional & naked (e.g. 0.7
+                            # BTC) — close instead of stop (Alpaca rejects a
+                            # fractional-qty stop).
+                            try:
+                                print(f"[AEGIS] {ticker} pure-fractional naked → close_position")
+                                close_position(ticker)
+                            except Exception as _cf:
+                                print(f"[AEGIS] {ticker} fractional close failed: {_cf}")
+                            continue
+                        # Partially covered with <1 naked share left → negligible
+                        # dust; leave it (closing would dump the protected shares too).
+                        print(f"[AEGIS] {ticker} naked remainder {_naked_qty:.4f}sh (<1) — "
+                              f"negligible dust; covered {_covered_qty:g}/{qty:g}")
                         continue
                     try:
                         from alpaca.trading.requests import StopOrderRequest as _SOR
@@ -351,6 +369,19 @@ def trail_positions(
                                     pass
                                 import time as _rescue_time
                                 _rescue_time.sleep(2.0)
+                                # CRITICAL (2026-06-30, Codex review): we just cancelled
+                                # EVERY active order for this ticker — including any stop
+                                # that was already covering the _covered_qty shares. So all
+                                # shares are now unprotected, not just the original naked
+                                # slice. Re-protect the FULL position, or we'd strip a
+                                # larger covered stop and replace it with a smaller
+                                # naked-slice stop (a worse naked window than we started).
+                                _full_qty = int(_math.floor(qty))
+                                if _full_qty > _stop_qty:
+                                    print(f"[AEGIS] {ticker} cancel-all stripped the {_covered_qty:g}-sh "
+                                          f"covered stop too — re-protecting FULL {_full_qty} shares "
+                                          f"(was rescuing only the {_stop_qty}-sh naked slice)")
+                                    _rescue_req.qty = _full_qty
                                 # Retry GTC then DAY
                                 try:
                                     _rescue_ord = client.submit_order(_rescue_req)
@@ -361,8 +392,9 @@ def trail_positions(
                                 # Not a held_for_orders error — try DAY fallback then give up
                                 _rescue_req.time_in_force = TimeInForce.DAY
                                 _rescue_ord = client.submit_order(_rescue_req)
-                        _frac_note = f" (fractional dust {qty - _stop_qty:.4f} uncovered)" if _is_fractional else ""
-                        print(f"[AEGIS] {ticker} was NAKED — placed rescue stop @ ${new_stop:.2f}{_frac_note}")
+                        _frac_note = f" (fractional dust {_naked_qty - _stop_qty:.4f} uncovered)" if _is_fractional else ""
+                        _cov_note = "" if _covered_qty <= 0 else f" ({_covered_qty:g}/{qty:g} already covered)"
+                        print(f"[AEGIS] {ticker} had {_stop_qty:g} NAKED share(s){_cov_note} — placed rescue stop @ ${new_stop:.2f}{_frac_note}")
                         results.append({
                             "ticker": ticker, "pct_gain": round(pct_gain, 2),
                             "trail_pct": KELLY_LOSS_PCT, "order_id": str(_rescue_ord.id),
@@ -398,7 +430,8 @@ def trail_positions(
                                 from alerts.slack import _post
                                 _post({"text": (
                                     f"🩹 *Naked position rescued — {ticker}*\n"
-                                    f">{('LONG' if is_long else 'SHORT')} {qty:g} @ avg ${_entry_px:.2f} · "
+                                    f">{('LONG' if is_long else 'SHORT')} {_stop_qty:g} of {qty:g} sh "
+                                    f"were unprotected @ avg ${_entry_px:.2f} · "
                                     f"current ${_cur_px:.2f} · P&L {pct_gain:+.1f}%\n"
                                     f">Placed rescue stop @ ${new_stop:.2f} "
                                     f"({KELLY_LOSS_PCT*100:.0f}% risk cap from "

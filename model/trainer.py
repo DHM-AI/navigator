@@ -36,6 +36,25 @@ SAVE_DIR = "model/saved"
 CACHE_PARQUET = "model/saved/training_data.parquet"
 CACHE_PICKLE  = "model/saved/training_data.pkl"   # fallback when parquet engine missing
 
+# ── Directional label parameters (A1 fix, 2026-07-30 forensic) ──────────────
+# The label must describe the trade the system ACTUALLY takes: a long, entered
+# at the next session's open, held 5 sessions, that has to survive its stop.
+# LABEL_STOP_PCT mirrors the live ATR stop clamp (config ATR_STOP_FLOOR_PCT 0.03
+# .. ATR_STOP_CAP_PCT 0.12); the midpoint is used as a single representative
+# width since per-row ATR is not available at label time. LABEL_COST_PCT is the
+# round-trip cost the return must clear to count as a win (~0.2% modeled cost,
+# consistent with the backtests' cost assumption).
+LABEL_STOP_PCT = 0.08     # stop-hit threshold on the intra-hold low vs entry
+LABEL_COST_PCT = 0.002    # net return must beat round-trip costs
+# LABEL_HOLD_DAYS must equal the LIVE time exit or the model is trained on a trade the
+# system never makes. Was an implicit 5 while CLOSE_ALL_FRIDAY=True truncated holds to a
+# measured mean of 2.96 sessions (only 18.7% ever reached 5) — i.e. it never matched
+# execution even then. Now tracks config.MAX_HOLD_SESSIONS (21).
+try:
+    from config import MAX_HOLD_SESSIONS as LABEL_HOLD_DAYS
+except Exception:
+    LABEL_HOLD_DAYS = 21
+
 
 def _save_training_cache(df: pd.DataFrame) -> str:
     """Save training data — prefer parquet, fall back to pickle if engine missing."""
@@ -96,16 +115,64 @@ def _fetch_training_data(tickers: list[str], years: int = 3) -> pd.DataFrame:
                         except Exception:
                             continue
 
-                        # Label: did price move ±5% in next 5 days?
-                        future = df["Close"].iloc[idx + 1:idx + 6]
+                        # ── LABELS ────────────────────────────────────────────
+                        # A1 fix (2026-07-30 forensic review). The ONLY label used
+                        # to be `label_unsigned` below: 1 if EITHER a +20% or a
+                        # -20% excursion occurred. That is a volatility/big-move
+                        # detector with NO direction — yet the live system trades
+                        # long-only, taking its side from an unrelated RSI/EMA/
+                        # sentiment vote in scorer.py. A name flagged precisely
+                        # because it was about to fall 20% still got BOUGHT.
+                        # Forward result of that mismatch: 45% direction accuracy,
+                        # corr(score, move) = -0.05 on 344 traded picks.
+                        #
+                        # `label` is now the LONG trade we actually take: enter at
+                        # the next session's open, hold LABEL_HOLD_DAYS sessions, and
+                        # require the net return to clear round-trip costs WITHOUT the
+                        # ATR stop being hit first. Modeling the stop matters — a name
+                        # that ends +8% after dropping 15% intraday is a LOSS live, and
+                        # the old label happily called it a win.
+                        future = df["Close"].iloc[idx + 1:idx + 1 + LABEL_HOLD_DAYS]
                         current_close = df["Close"].iloc[idx]
-                        if len(future) < 5 or current_close == 0:
+                        if len(future) < LABEL_HOLD_DAYS or current_close == 0:
                             continue
                         max_move = float((future.max() - current_close) / current_close)
                         min_move = float((future.min() - current_close) / current_close)
-                        label = 1 if (max_move >= MOVE_TARGET_PCT or min_move <= -MOVE_TARGET_PCT) else 0
+                        # Legacy unsigned target — kept for A/B comparison only.
+                        label_unsigned = 1 if (max_move >= MOVE_TARGET_PCT
+                                               or min_move <= -MOVE_TARGET_PCT) else 0
 
-                        row = {"ticker": ticker, "date": df.index[idx], "label": label}
+                        # Executable long: next-open entry (what the backtest and
+                        # any honest sim can actually fill), held LABEL_HOLD_DAYS.
+                        # ⛔ 2026-07-31: horizon 5 -> LABEL_HOLD_DAYS (21). The live exit
+                        # contract CHANGED — CLOSE_ALL_FRIDAY went False and MAX_HOLD_SESSIONS
+                        # = 21 became the time exit — so a 5-session label no longer describes
+                        # any trade the system makes. Training on a horizon the executor does
+                        # not trade is the ORIGINAL defect of this system (unsigned ±20% label
+                        # vs long-only execution); do not let it back in via the horizon.
+                        try:
+                            entry = float(df["Open"].iloc[idx + 1])
+                        except Exception:
+                            continue
+                        if entry <= 0:
+                            continue
+                        exit_close = float(df["Close"].iloc[idx + LABEL_HOLD_DAYS])
+                        gross_ret = exit_close / entry - 1.0
+                        # Did the intended stop get hit first? Use the LOW over the
+                        # hold window vs the same ATR-derived stop the live bracket
+                        # would place (floor/cap clamped, mirroring config).
+                        try:
+                            lows = df["Low"].iloc[idx + 1:idx + 1 + LABEL_HOLD_DAYS]
+                            worst = float(lows.min() / entry - 1.0)
+                        except Exception:
+                            worst = float(min_move)
+                        stop_pct = LABEL_STOP_PCT
+                        stopped = worst <= -stop_pct
+                        label = 1 if (not stopped and gross_ret > LABEL_COST_PCT) else 0
+
+                        row = {"ticker": ticker, "date": df.index[idx], "label": label,
+                               "label_unsigned": label_unsigned,
+                               "fwd_ret": gross_ret, "fwd_worst": worst}
                         row.update(features)
                         rows.append(row)
                 except Exception:
@@ -229,13 +296,60 @@ def train(force_refetch: bool = False) -> None:
     except Exception as e:
         print(f"[trainer] Calibration eval skipped: {e}")
 
+    # ── Refit a DEPLOY model on ALL mature rows ────────────────────────────
+    # A7 fix (2026-07-30 forensic). We used to pickle `model` — the estimator fit
+    # on only the FIRST 70% of time-sorted rows. With calibration disabled at
+    # inference, the newest 30% had ZERO influence on live predictions: the July
+    # 2026 artifact was last trained on 2025-01-24 data, ~18 months stale, and
+    # monthly GENESIS retrains rewrote the file without ever fixing that (each run
+    # just re-derived the same 70% boundary from a slightly longer cache).
+    # `model` above stays the honest EVALUATION estimator (its test slice is
+    # genuinely out-of-sample); what we DEPLOY is a fresh estimator with identical
+    # hyperparameters fit on every row whose 5-day label is fully mature.
+    print("\n[trainer] Refitting deploy model on all mature rows...")
+    deploy_pos_rate = y.mean()
+    deploy_model = XGBClassifier(
+        n_estimators=300,
+        max_depth=5,
+        learning_rate=0.05,
+        subsample=0.8,
+        colsample_bytree=0.8,
+        scale_pos_weight=((1 - deploy_pos_rate) / deploy_pos_rate
+                          if deploy_pos_rate > 0 else 1.0),
+        eval_metric="logloss",
+        random_state=42,
+        n_jobs=-1,
+    )
+    deploy_model.fit(X, y, verbose=False)
+    _trained_through = str(pd.to_datetime(data["date"]).max().date())
+    print(f"[trainer] Deploy model trained through {_trained_through} "
+          f"({len(X):,} rows) vs eval model through "
+          f"{pd.to_datetime(data['date']).iloc[train_end-1].date()}")
+
     # ── Save model + calibrator + feature names ────────────────────────────
     with open(MODEL_PATH, "wb") as f:
-        pickle.dump(model, f)
+        pickle.dump(deploy_model, f)
     with open(CALIBRATOR_PATH, "wb") as f:
         pickle.dump(calibrator, f)
     with open(FEATURE_NAMES_PATH, "w") as f:
         json.dump(FEATURE_COLS, f)
+    # Provenance so staleness can never hide behind a fresh file mtime again.
+    try:
+        with open(os.path.join(SAVE_DIR, "model_metadata.json"), "w") as f:
+            json.dump({
+                "trained_at": datetime.now().isoformat(),
+                "trained_through": _trained_through,
+                "rows": int(len(X)),
+                "tickers": int(data["ticker"].nunique()),
+                "label": ("long next-open, 5-session hold, must clear "
+                          f"{LABEL_COST_PCT:.3%} cost without hitting "
+                          f"-{LABEL_STOP_PCT:.0%} stop"),
+                "label_positive_rate": float(deploy_pos_rate),
+                "eval_auc": float(auc) if "auc" in locals() else None,
+                "deploy_fit": "all mature rows (not the 70% eval split)",
+            }, f, indent=2)
+    except Exception as _me:
+        print(f"[trainer] metadata write skipped: {_me}")
     print(f"\n[trainer] Saved model      → {MODEL_PATH}")
     print(f"[trainer] Saved calibrator → {CALIBRATOR_PATH}")
     print(f"[trainer] Saved feature names → {FEATURE_NAMES_PATH}")

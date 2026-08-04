@@ -1,14 +1,23 @@
-"""Friday flatten — close ALL equity positions before the weekend.
+"""Pre-closure flatten — close ALL equity positions before any market closure.
 
-Renato's rule (2026-06-12): no position carries weekend gap risk. Every Friday
-~1h before the close (3:00 PM ET) this closes every open EQUITY position at
-market. Crypto is HELD — it trades 24/7, so there is no weekend gap to fear.
+Renato's rule (2026-06-12): no position carries weekend gap risk. This closes every
+open EQUITY position at market on the LAST trading session before a market closure —
+not just Fridays, but the day before any holiday too. Crypto is HELD (trades 24/7,
+no gap to fear).
 
-Triggered by com.illuminati.friday_flatten (launchd, Fri 1:00 PM MT = 3:00 PM ET)
-via scripts/friday_flatten_trigger.sh. SAFETY-GATED three ways so a stray/coalesced
-wake can never flatten at the wrong time:
+Calendar-aware (2026-06-22): the old "Friday only" gate broke on holiday-Fridays —
+when a Friday is itself a market holiday (e.g. Juneteenth 6/19, or 7/3 before the
+Saturday 7/4), the Friday flatten can't run (market closed) AND never ran on the
+prior session (it wasn't a Friday), so positions rode the whole long weekend — the
+exact risk this exists to kill. Gate 2 now uses the Alpaca trading calendar: flatten
+iff today is a trading day AND the next calendar day is NOT (weekend or holiday).
+
+Triggered by com.illuminati.friday_flatten (launchd, every weekday 10:00 MT = 12:00 PM
+ET) via scripts/friday_flatten_trigger.sh. SAFETY-GATED so a stray/coalesced wake can
+never flatten at the wrong time:
   1. config CLOSE_ALL_FRIDAY must be True
-  2. it must be Friday in ET
+  2. today must be the last trading session before a closure (calendar-aware; fails
+     SAFE back to the legacy Friday rule if the calendar can't be fetched)
   3. the ET clock must be inside the flatten window AND the market must be OPEN
 """
 from __future__ import annotations
@@ -22,6 +31,31 @@ def _now_et():
         return datetime.now(ZoneInfo("America/New_York"))
     except Exception:                      # pragma: no cover
         return datetime.utcnow() - timedelta(hours=4)
+
+
+def _is_last_session_before_closure(now_et) -> bool:
+    """True iff TODAY (ET) is a trading day AND the next calendar day is NOT a trading
+    day — i.e. holding past today would carry a market-closure gap (weekend OR holiday).
+
+    Uses the Alpaca trading calendar, so holidays are handled automatically: it flattens
+    every normal Friday (Sat closed) AND the day before any holiday (e.g. Thursday before
+    a holiday-Friday like 7/3). Fails SAFE: any calendar-fetch error falls back to the
+    legacy "Friday only" rule so a transient API hiccup can't silently disable Fridays.
+    """
+    today = now_et.date()
+    tomorrow = today + timedelta(days=1)
+    try:
+        from execution.alpaca import _get_client
+        from alpaca.trading.requests import GetCalendarRequest
+        cal = _get_client().get_calendar(
+            GetCalendarRequest(start=today, end=today + timedelta(days=7)))
+        trading_days = {c.date for c in cal}          # c.date is a datetime.date
+        if today not in trading_days:
+            return False                              # market closed today — nothing to do
+        return tomorrow not in trading_days           # gap tomorrow → today is the last session
+    except Exception as e:
+        print(f"[FRIDAY-FLATTEN] calendar check failed ({e}) — falling back to Friday rule.")
+        return now_et.weekday() == 4                  # legacy: Friday only (Mon=0 … Fri=4)
 
 
 def run(force: bool = False) -> list[dict]:
@@ -44,9 +78,13 @@ def run(force: bool = False) -> list[dict]:
     now = _now_et()
     et_frac = now.hour + now.minute / 60.0
     if not force:
-        # Gate 2: Friday only (Mon=0 … Fri=4)
-        if now.weekday() != 4:
-            print(f"[FRIDAY-FLATTEN] Not Friday ({now:%a}) — skip.")
+        # Gate 2 (calendar-aware): flatten only on the LAST trading session before a
+        # market closure — today is a trading day AND tomorrow is NOT (weekend OR
+        # holiday). Covers normal Fridays AND the day before a holiday (e.g. Thursday
+        # before a holiday-Friday like 7/3) — which the old "Friday only" gate missed.
+        if not _is_last_session_before_closure(now):
+            print(f"[FRIDAY-FLATTEN] {now:%a %Y-%m-%d} — not the last session before a "
+                  f"market closure (next calendar day still trades) — skip.")
             return []
         # Gate 3: inside the flatten window (target .. target+45min). A late/early
         # coalesced wake outside this band is skipped so we never flatten at 9 AM.
@@ -64,7 +102,14 @@ def run(force: bool = False) -> list[dict]:
                    "Positions may carry over the weekend. Check manually.")
             return []
     except Exception as e:
-        print(f"[FRIDAY-FLATTEN] Could not verify market clock ({e}) — proceeding.")
+        # FAIL CLOSED (2026-06-30, Codex review): if we can't confirm the market is
+        # OPEN, do NOT proceed. close_position() cancels the protective stops before
+        # it sends the market close, so a clock/API hiccup that lets us proceed could
+        # strip stops and then fail to close — leaving the position NAKED. Skip + alert.
+        print(f"[FRIDAY-FLATTEN] Could not verify market clock ({e}) — failing closed (skip).")
+        _alert(f"⚠️ *FRIDAY FLATTEN skipped — could not verify the market clock* ({e}). "
+               "Positions were NOT flattened and keep their stops. Check manually.")
+        return []
 
     positions = get_positions()
     equities = [p for p in positions if not is_crypto(p["ticker"])]

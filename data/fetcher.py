@@ -96,6 +96,7 @@ def _alpaca_get_ohlcv(ticker: str, period: str, interval: str) -> pd.DataFrame:
     try:
         from alpaca.data.requests import StockBarsRequest
         from alpaca.data.timeframe import TimeFrame
+        from alpaca.data.enums import DataFeed, Adjustment
 
         # Map yfinance interval → Alpaca TimeFrame
         tf = TimeFrame.Day
@@ -107,14 +108,21 @@ def _alpaca_get_ohlcv(ticker: str, period: str, interval: str) -> pd.DataFrame:
             tf = TimeFrame.Minute
 
         start = _period_to_start_date(period)
-        req = StockBarsRequest(symbol_or_symbols=ticker, timeframe=tf, start=start)
+        # feed=SIP (full consolidated tape, not thin IEX) + adjustment=ALL
+        # (split+dividend) to MATCH the yfinance fallback's auto_adjust=True, so
+        # the same ticker has one convention regardless of source, and stock
+        # splits don't create false price discontinuities (the KLAC-type glitch).
+        # Alpaca uses dot class-shares ('BF.B'); the universe uses hyphens ('BF-B').
+        _alp = ticker.replace("-", ".")
+        req = StockBarsRequest(symbol_or_symbols=_alp, timeframe=tf, start=start,
+                               feed=DataFeed.SIP, adjustment=Adjustment.ALL)
         bars = client.get_stock_bars(req)
         df = bars.df
         if df is None or df.empty:
             return pd.DataFrame()
         # Alpaca returns a multi-index (symbol, timestamp). Drop symbol level.
         if isinstance(df.index, pd.MultiIndex):
-            df = df.xs(ticker, level=0) if ticker in df.index.get_level_values(0) else df.droplevel(0)
+            df = df.xs(_alp, level=0) if _alp in df.index.get_level_values(0) else df.droplevel(0)
         # Normalize columns to yfinance shape: Open, High, Low, Close, Volume
         df = df.rename(columns={
             "open":   "Open",  "high":   "High",  "low":    "Low",
@@ -150,44 +158,57 @@ def _alpaca_get_ohlcv_batch(tickers: list[str], period: str) -> dict[str, pd.Dat
     try:
         from alpaca.data.requests import StockBarsRequest
         from alpaca.data.timeframe import TimeFrame
+        from alpaca.data.enums import DataFeed, Adjustment
+    except Exception:
+        return {}
+    start = _period_to_start_date(period)
 
-        start = _period_to_start_date(period)
-        req = StockBarsRequest(
-            symbol_or_symbols=stock_tickers,
-            timeframe=TimeFrame.Day,
-            start=start,
-        )
-        bars = client.get_stock_bars(req)
-        df = bars.df
-        if df is None or df.empty:
-            return {}
-        out: dict[str, pd.DataFrame] = {}
-        # Multi-index (symbol, timestamp) — split into per-symbol DataFrames
-        if isinstance(df.index, pd.MultiIndex):
-            for symbol in df.index.get_level_values(0).unique():
-                sub = df.xs(symbol, level=0).copy()
+    def _parse(bdf, req_syms):
+        res = {}
+        if bdf is None or bdf.empty:
+            return res
+        multi = isinstance(bdf.index, pd.MultiIndex)
+        syms = list(bdf.index.get_level_values(0).unique()) if multi else req_syms[:1]
+        for sym in syms:
+            try:
+                sub = bdf.xs(sym, level=0).copy() if multi else bdf.copy()
                 sub = sub.rename(columns={
-                    "open":   "Open",  "high":   "High",  "low":    "Low",
-                    "close":  "Close", "volume": "Volume",
+                    "open": "Open", "high": "High", "low": "Low",
+                    "close": "Close", "volume": "Volume",
                 })
                 keep = [c for c in ("Open", "High", "Low", "Close", "Volume") if c in sub.columns]
                 sub = sub[keep]
                 if sub.index.tz is not None:
                     sub.index = sub.index.tz_convert("UTC").tz_localize(None)
-                out[symbol] = sub
-        else:
-            # Single ticker came back without multi-index
-            df = df.rename(columns={
-                "open": "Open", "high": "High", "low": "Low",
-                "close": "Close", "volume": "Volume",
-            })
-            if df.index.tz is not None:
-                df.index = df.index.tz_convert("UTC").tz_localize(None)
-            out[stock_tickers[0]] = df
-        return out
+                res[sym] = sub
+            except Exception:
+                pass
+        return res
+
+    def _fetch(req_syms):
+        req = StockBarsRequest(symbol_or_symbols=req_syms, timeframe=TimeFrame.Day,
+                               start=start, feed=DataFeed.SIP, adjustment=Adjustment.ALL)
+        return _parse(client.get_stock_bars(req).df, req_syms)
+
+    # Alpaca uses dot class-shares ('BF.B'); the universe uses hyphens ('BF-B').
+    # Translate for the request, restore original keys in the output. On a batch
+    # failure (one invalid symbol nukes the whole request), retry per symbol so the
+    # rest still come from Alpaca instead of dropping the entire chunk to yfinance.
+    amap = {t.replace("-", "."): t for t in stock_tickers}
+    try:
+        got = _fetch(list(amap.keys()))
     except Exception as e:
-        print(f"[fetcher] Alpaca batch failed ({len(stock_tickers)} tickers): {e}")
-        return {}
+        print(f"[fetcher] Alpaca batch failed ({len(stock_tickers)} tickers): {e} — per-symbol retry")
+        got = {}
+        for asym in amap:
+            try:
+                got.update(_fetch([asym]))
+            except Exception:
+                pass
+    out: dict[str, pd.DataFrame] = {}
+    for asym, df in got.items():
+        out[amap.get(asym, asym)] = df
+    return out
 
 
 # ─── yfinance fallbacks (original behavior, used when Alpaca fails) ──────────
@@ -236,6 +257,51 @@ def _yf_get_ohlcv_batch(tickers: list[str], period: str = "1y",
         if i + chunk_size < len(tickers):
             time.sleep(delay)
     return results
+
+
+# ─── Complete-session guard (2026-07-14) ─────────────────────────────────────
+
+def drop_partial_bar(df: pd.DataFrame) -> pd.DataFrame:
+    """Return `df` without TODAY's still-forming session bar.
+
+    WHY (root-caused 2026-07-14 — "why no trades for 2 days"): the scanner runs
+    INTRADAY (9:30–15:30 ET), so the last daily bar is a PARTIAL session — its
+    Volume is a fraction of the eventual day and its High/Low range is squashed.
+    Feeding that bar to the signal stack + the model is a correctness bug:
+
+      • volume_surge  (13 pts) divides PARTIAL-day volume by a FULL-day 20d
+        average, so inside the 10:00–13:00 entry window it needs a ~6-8x day to
+        fire → effectively never fires → every score runs ~13 points light.
+      • atr_compression (8 pts) FALSELY triggers: an unfinished bar has an
+        artificially narrow range, which reads as a "coiled spring".
+      • candlestick    (7 pts) reads a candle that has not closed yet.
+      • atr_pct (stop sizing) is biased NARROW → stops set too tight.
+      • the XGBoost model was TRAINED on complete daily bars, so a partial final
+        bar is a feature distribution it never saw once (train/serve skew) —
+        making live xgb_prob non-comparable to the backtested gate.
+
+    Dropping it makes LIVE score/predict on the same complete-session data the
+    backtest and the trainer use. Execution is NOT affected: place_order sources
+    its entry price from a LIVE quote (get_current_price), never from these bars.
+
+    Keeps today's bar once the session has CLOSED (>=16:00 ET), since by then it
+    is a complete session and discarding it would throw away a real day.
+    """
+    if df is None or len(df) < 2:
+        return df
+    try:
+        from datetime import datetime
+        from zoneinfo import ZoneInfo
+        now_et = datetime.now(ZoneInfo("America/New_York"))
+        last = df.index[-1]
+        last_date = last.date() if hasattr(last, "date") else pd.to_datetime(last).date()
+        if last_date < now_et.date():
+            return df                      # last bar is an earlier, complete session
+        if now_et.hour >= 16:
+            return df                      # today's session has closed → bar is complete
+        return df.iloc[:-1]                # today's bar is still forming → drop it
+    except Exception:
+        return df                          # never break the scan over this
 
 
 # ─── Public API (Alpaca first, yfinance fallback) ────────────────────────────

@@ -35,9 +35,14 @@ TEST_START = "2023-01"
 TRAIN_MIN_MONTHS = 16
 TIER_Q = 0.995
 HOLD = 10
-ATR_MULT, ATR_FLOOR, ATR_CAP = 2.0, 0.03, 0.10
-HARD_MAX = 0.12
-TP = 0.12                  # the deployed fixed take-profit
+# Exit constants from the LIVE config so this can't drift from what we trade
+# (Codex review 2026-06-30 — were hardcoded 0.10/0.12/TP 0.12, stale vs live
+# 0.12/0.14/TP 0.20). The docstring's "+12% TP" describes the OLD deployed config.
+ATR_MULT  = config.ATR_STOP_MULT        # 2.0
+ATR_FLOOR = config.ATR_STOP_FLOOR_PCT   # 0.03
+ATR_CAP   = config.ATR_STOP_CAP_PCT     # 0.12 (live; was 0.10)
+HARD_MAX  = config.HARD_MAX_LOSS_PCT    # 0.14 (live; was 0.12)
+TP = config.SWING_TP_PCT                # 0.20 live take-profit (was 0.12)
 COST = 0.20
 
 
@@ -58,24 +63,110 @@ def walk_forward_oos(df):
     return pd.concat(out, ignore_index=True)
 
 
+def _alpaca_bars(tickers, start, end):
+    """Alpaca SIP, split+div-adjusted daily bars — the SAME feed/convention the
+    LIVE system trades on (see data/fetcher.py). Returns {ticker: DataFrame[Open,
+    High,Low,Close]} with a tz-naive MIDNIGHT DatetimeIndex so it matches both the
+    yfinance shape and the parquet's date keys (searchsorted relies on this).
+    Returns {} on any failure → caller falls back to yfinance."""
+    import os
+    key, sec = os.getenv("ALPACA_API_KEY", ""), os.getenv("ALPACA_SECRET_KEY", "")
+    if not key or not sec:
+        return {}
+    try:
+        from alpaca.data.historical import StockHistoricalDataClient
+        from alpaca.data.requests import StockBarsRequest
+        from alpaca.data.timeframe import TimeFrame
+        from alpaca.data.enums import DataFeed, Adjustment
+        cli = StockHistoricalDataClient(key, sec)
+    except Exception as e:
+        print(f"  [alpaca bars] client init failed: {e}")
+        return {}
+    out, tickers = {}, list(tickers)
+    # The basic data plan blocks the most-recent ~15 min of SIP, so a future/today
+    # `end` fails the WHOLE request — clamp to a fully-settled boundary (2 days
+    # back). This is a wall-clock dependency by necessity (it tracks data RECENCY),
+    # but it can't change completed-trade results: every pick's exit window closes
+    # well before this boundary, so cross-day re-runs differ only in unused trailing
+    # bars. Historical windows already ending < boundary pass through unchanged.
+    end = min(pd.Timestamp(end), pd.Timestamp.today().normalize() - pd.Timedelta(days=2))
+    def _parse(bdf, req_syms):
+        res = {}
+        if bdf is None or bdf.empty:
+            return res
+        multi = isinstance(bdf.index, pd.MultiIndex)
+        syms = list(bdf.index.get_level_values(0).unique()) if multi else req_syms[:1]
+        for sym in syms:
+            try:
+                sub = bdf.xs(sym, level=0) if multi else bdf
+                sub = sub.rename(columns={"open": "Open", "high": "High",
+                                          "low": "Low", "close": "Close"})
+                sub = sub[["Open", "High", "Low", "Close"]].copy()
+                idx = pd.to_datetime(sub.index)
+                if getattr(idx, "tz", None) is not None:
+                    idx = idx.tz_convert("UTC").tz_localize(None)
+                sub.index = idx.normalize()             # midnight → match parquet dates
+                sub = sub[~sub.index.duplicated(keep="last")].dropna()
+                if len(sub) > 30:
+                    res[sym] = sub
+            except Exception:
+                pass
+        return res
+
+    def _fetch(req_syms):
+        req = StockBarsRequest(symbol_or_symbols=req_syms, timeframe=TimeFrame.Day,
+                               start=pd.Timestamp(start), end=end,
+                               feed=DataFeed.SIP, adjustment=Adjustment.ALL)
+        return _parse(cli.get_stock_bars(req).df, req_syms)
+
+    for i in range(0, len(tickers), 200):
+        chunk = tickers[i:i + 200]
+        # Alpaca uses dot class-shares ('BF.B'); the universe/parquet use hyphens
+        # ('BF-B'). Translate for the request; restore original keys in the output.
+        amap = {t.replace("-", "."): t for t in chunk}      # alpaca_sym -> original
+        try:
+            got = _fetch(list(amap.keys()))
+        except Exception as e:
+            # One invalid symbol fails the WHOLE batch — retry per symbol so the
+            # rest still come from Alpaca instead of dropping to yfinance.
+            print(f"  [alpaca bars] chunk {i} batch failed ({str(e)[:50]}); per-symbol retry")
+            got = {}
+            for asym in amap:
+                try:
+                    got.update(_fetch([asym]))
+                except Exception:
+                    pass
+        for asym, df in got.items():
+            out[amap.get(asym, asym)] = df
+    return out
+
+
 def fetch_ohlc(tickers, dmin, dmax):
     start = (pd.Timestamp(dmin) - pd.Timedelta(days=40)).strftime("%Y-%m-%d")
     end = (pd.Timestamp(dmax) + pd.Timedelta(days=40)).strftime("%Y-%m-%d")
-    out = {}
-    for i in range(0, len(tickers), 50):
-        chunk = tickers[i:i + 50]
-        print(f"  ohlc {i}/{len(tickers)} ...")
-        raw = yf.download(chunk, start=start, end=end, progress=False,
-                          auto_adjust=True, group_by="ticker", threads=True)
-        for t in chunk:
+    # Alpaca SIP (fresh, adjusted — the same feed the live system trades on) is
+    # PRIMARY so backtests run on the SAME data as live execution; yfinance only
+    # fills tickers Alpaca can't return.
+    out = _alpaca_bars(tickers, start, end)
+    missing = [t for t in tickers if t not in out]
+    if missing:
+        print(f"  [fetch_ohlc] Alpaca {len(out)}/{len(tickers)} · yfinance for {len(missing)}")
+        for i in range(0, len(missing), 50):
+            chunk = missing[i:i + 50]
             try:
-                d = raw[t] if isinstance(raw.columns, pd.MultiIndex) else raw
-                d = d[["Open", "High", "Low", "Close"]].dropna()
-                d.index = pd.to_datetime(d.index).tz_localize(None)
-                if len(d) > 30:
-                    out[t] = d
+                raw = yf.download(chunk, start=start, end=end, progress=False,
+                                  auto_adjust=True, group_by="ticker", threads=True)
             except Exception:
-                pass
+                continue
+            for t in chunk:
+                try:
+                    d = raw[t] if isinstance(raw.columns, pd.MultiIndex) else raw
+                    d = d[["Open", "High", "Low", "Close"]].dropna()
+                    d.index = pd.to_datetime(d.index).tz_localize(None).normalize()  # match Alpaca midnight keys
+                    if len(d) > 30:
+                        out[t] = d
+                except Exception:
+                    pass
     return out
 
 
@@ -98,6 +189,11 @@ def simulate(d, sig_date):
         p = idx.searchsorted(sig_date) - 1
     ei = p + 1
     if ei >= len(idx) - 2:
+        return None
+    # No-lookahead guard: if sig_date is missing from the index (data gap/halt),
+    # the fallback can point ei at a bar weeks/months after the signal — entering
+    # there would use future information. Skip if the entry bar is >5 days off.
+    if abs((pd.Timestamp(idx[ei]) - pd.Timestamp(sig_date)).days) > 5:
         return None
     entry = float(d["Open"].iloc[ei])
     if entry <= 0:

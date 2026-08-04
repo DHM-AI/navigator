@@ -1,7 +1,15 @@
 from dotenv import load_dotenv
 import os
 
-load_dotenv()
+# Load .env explicitly from THIS file's own directory (not cwd-dependent), so the
+# keys load via Python even when the launchd shell can't source it. macOS revoked
+# /bin/bash's Full Disk Access (2026-06-25) → the trigger's `. .env` EPERMs; the
+# Python binary keeps file access, so this is the system's reliable .env loader.
+load_dotenv(os.path.join(os.path.dirname(os.path.abspath(__file__)), ".env"))
+
+# Shown as a banner on every Slack alert so this (main) account is never confused
+# with the aggressive $1M account — they share one Slack channel.
+ACCOUNT_LABEL = "🟢 MAIN · $150k"
 
 # ── Environment: "prod" (live system) or "lab" (paper sandbox for experiments) ──
 # Defaults to "prod" → ZERO behavior change for the live system. When the LAB
@@ -47,6 +55,10 @@ WATCHLIST = [
 
     # ── High-profile tech / growth not always in S&P 500 ─────────────────────
     "TSLA",  # Tesla              — in S&P 500 (deduped automatically if so)
+    "SPCX",  # SpaceX (Space Exploration Technologies) — IPO'd 2026-06-12, NASDAQ.
+             # NOTE: brand-new listing — < ~50 bars means the technical features
+             # can't compute yet, so it's tracked but won't score until it builds
+             # ~2-3 months of history. Extremely volatile post-IPO.
     "RIVN",  # Rivian             — EV, not in S&P 500
     "LCID",  # Lucid Motors       — EV, not in S&P 500
     "HOOD",  # Robinhood          — fintech, not in S&P 500
@@ -139,6 +151,12 @@ FORCE_DAY_TRADES     = False
 # These are lottery tickets no stop setting fixes; they are the real -30% days.
 ENABLE_VOLATILITY_FILTER = True
 MAX_ENTRY_ATR_PCT        = 0.10   # skip auto-trade if 14-day ATR > 10% of price
+
+# Near-high filter (2026-06-16, mirrored from acct2) — skip picks bought within
+# NEAR_HIGH_BAND_PCT% of the prior 10-session high. Full walk-forward (2,412 trades):
+# at-the-high PF 1.67 vs pullback 2.30; skip-within-2% lifts PF 2.12→2.26, keeps 79%.
+ENABLE_NEAR_HIGH_FILTER  = True
+NEAR_HIGH_BAND_PCT       = 2.0    # skip if entry is within this % of (or above) the 10-day high
 #
 # Part 2 — ATR-based stops: stop = entry -/+ (ATR_STOP_MULT x ATR), clamped to
 # [floor, cap]. Position size auto-rescales so $ risk per trade stays constant
@@ -146,7 +164,8 @@ MAX_ENTRY_ATR_PCT        = 0.10   # skip auto-trade if 14-day ATR > 10% of price
 ENABLE_ATR_STOPS   = True
 ATR_STOP_MULT      = 2.0    # 2x ATR = swing-trading standard (research: 1.5-2.5x)
 ATR_STOP_FLOOR_PCT = 0.03   # never tighter than 3% (current behavior as the floor)
-ATR_STOP_CAP_PCT   = 0.10   # never wider than 10% (cap caught the junk in backtest)
+ATR_STOP_CAP_PCT   = 0.12   # widened 0.10→0.12 (2026-06-16 stop-width sweep: ~40% of 10% stop-outs
+                            # were premature/recovered). Mirrors acct2. Cap still bounds risk.
 
 # ── Model blending weights ────────────────────────────────────────────────────
 XGB_WEIGHT       = 0.70
@@ -171,7 +190,8 @@ KELLY_FRACTION    = 0.5    # use half-Kelly for safety
 # instead of real money. SAME strategy / signals / stops — only position SIZE and
 # COUNT shrink. To return to full size after live validation: set CANARY_MODE =
 # False (one line) and everything reverts to the full values below.
-CANARY_MODE               = True
+CANARY_MODE               = False  # OFF 2026-06-18 (Renato) — MAIN paper acct runs full size
+                                   # (8%/~$12k per trade, up to 10 concurrent). Daily cap = 8 (below).
 CANARY_MAX_POSITION_PCT   = 0.04   # ~$1,000/trade on a $25k account (raised 2%→4%, Renato 2026-06-05)
 CANARY_MAX_OPEN_POSITIONS = 5      # up to 5 concurrent (raised 3→5, Renato 2026-06-05)
 CANARY_MAX_DAILY_TRADES   = 10     # day-trade turnover (raised 4→10, Renato 2026-06-05)
@@ -262,7 +282,18 @@ MIN_STOCK_PRICE        = MIN_PRICE   # single source of truth — alias of MIN_P
 # 12:00 PM ET) + friday_flatten.py. Crypto is held (24/7 — no weekend gap).
 # Pairs with FRIDAY_ENTRY_CUTOFF_ET=12.0 so by noon Friday the book is flat and
 # no new position opens. (Moved 3 PM → noon, Renato 2026-06-12.)
+# ⚠️ MAIN's Alpaca account was deleted 2026-07-14 — this account no longer trades, so
+# CLOSE_ALL_FRIDAY here is inert. It is the AGGRESSIVE account that trades, and there
+# CLOSE_ALL_FRIDAY was set False on 2026-07-31 (the weekly flatten was costing ~16pp of
+# annual return in turnover — see that config for the measurement).
 CLOSE_ALL_FRIDAY        = True
+
+# ⛔ SHARED MODEL CONTRACT — this account still runs GENESIS, which trains the model BOTH
+# accounts score with. model/trainer.py imports MAX_HOLD_SESSIONS from HERE to set the
+# label horizon, so this value must track the AGGRESSIVE account's live time exit or the
+# model is trained on a trade the executor never makes — the original defect of this
+# system, re-entering through the horizon instead of the direction.
+MAX_HOLD_SESSIONS       = 21     # mirrors market-predictions-aggressive/config.py
 FRIDAY_FLATTEN_ET       = 12.0   # 12:00 PM ET — flatten the whole book by noon
 
 NO_ENTRY_BEFORE_ET      = 10.0   # 10:00 AM ET — no new entries in the first 30 min
@@ -315,7 +346,9 @@ BLOCK_SAME_DAY_REENTRY  = True   # after a stop-out, no re-entry on that ticker 
 #     (Was 8% — fine under day-trade 1.5% stops, but would have liquidated the
 #     widest swing names at -8% before their -10% stop. Fixed for swing revert,
 #     2026-06-08, audit Finding #5.)
-HARD_MAX_LOSS_PCT       = 0.12   # force-close at market if a position is down >12%
+HARD_MAX_LOSS_PCT       = 0.14   # raised 0.12→0.14 (2026-06-16) to stay ABOVE the widened
+                                 # ATR_STOP_CAP_PCT (0.12) — hard breaker must back-stop the
+                                 # widest stop, not coincide with it (ZEUS Circuit Breakers).
 
 # (C) NO DAILY KILL-SWITCH — May 27 ran unchecked to -$4,776. The existing
 #     DAILY_LOSS_LIMIT_PCT checks slow account-equity swing; this checks REALIZED
@@ -352,10 +385,15 @@ ENABLE_PARTIAL_EXIT          = False
 # Set True to restore multi-level trailing.
 ENABLE_TRAILING_STOP         = False
 
-# Swing bracket take-profit = +12% (was MOVE_TARGET_PCT 20% ceiling). The 12%
-# fixed target is what won the exit sweep; MOVE_TARGET_PCT stays 20% for its
-# OTHER consumers (ORACLE/learning hit definition, ZEUS). (2026-06-10)
-SWING_TP_PCT                 = 0.12
+# Swing bracket take-profit = +20% (widened 12%→20%, Renato 2026-06-23, matches AGG).
+# A TP-level sweep (full 2023→2026 walk-forward, hold=5 = the weekly-flatten cap,
+# trail off) showed PF/return rise monotonically as the TP WIDENS — a tighter TP just
+# caps winners early (conviction picks run past +12% inside a week). MAIN ≥0.90 tier:
+# 12% → PF 1.71 / +1,729% vs 20% → PF 1.83 / +2,832%. So the wide TP intentionally
+# stays out of the way (rarely fills); the ATR stop + weekly flatten manage exits.
+# MOVE_TARGET_PCT (0.20) stays the ORACLE/ZEUS hit definition. NOT lowered — the data
+# said lowering hurts.
+SWING_TP_PCT                 = 0.20
 
 PARTIAL_EXIT_TIER1_TRIGGER   = 0.07   # fire Tier 1 at +7% gain
 PARTIAL_EXIT_TIER1_FRACTION  = 0.20   # close 20% of original position
@@ -421,7 +459,10 @@ TRAIN_TEST_SPLIT   = 0.80
 
 # ── Crypto ────────────────────────────────────────────────────────────────────
 # Alpaca uses "BTC/USD" format; yfinance uses "BTC-USD"
-ENABLE_CRYPTO = os.getenv("ENABLE_CRYPTO", "true").lower() == "true"
+# Crypto REMOVED 2026-06-17 (Renato) — equities-only system. Hard-off (not env-
+# driven) so it can't be silently re-enabled. Gates the universe (no crypto scanned)
+# and order routing (no crypto traded). Revert: set back to the os.getenv line.
+ENABLE_CRYPTO = False
 CRYPTO_UNIVERSE = {
     "BTC/USD":  "BTC-USD",   # Bitcoin
     "ETH/USD":  "ETH-USD",   # Ethereum

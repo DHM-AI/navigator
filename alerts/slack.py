@@ -23,12 +23,26 @@ import urllib.request
 import urllib.error
 from datetime import datetime
 from config import SLACK_WEBHOOK_URL, IS_LAB
+try:
+    from config import ACCOUNT_LABEL as _ACCOUNT_LABEL
+except ImportError:
+    _ACCOUNT_LABEL = ""
 
 
 # ── Helpers ───────────────────────────────────────────────────────────────────
 
 def _post(payload: dict) -> bool:
     """POST a JSON payload to the configured Slack webhook. Returns True on success."""
+    # Account banner (2026-06-15): accounts 1 and 2 share one Slack channel, so every
+    # alert carries its account label BOTH in the fallback text (notification preview)
+    # AND as a context block at the top of the card body, so the two are never confused.
+    if _ACCOUNT_LABEL:
+        payload = dict(payload)
+        payload["text"] = f"{_ACCOUNT_LABEL} · {payload.get('text') or ''}".rstrip(" ·")
+        if isinstance(payload.get("blocks"), list):
+            payload["blocks"] = [{"type": "context", "elements": [
+                {"type": "mrkdwn", "text": f"*{_ACCOUNT_LABEL}*"}]}
+            ] + payload["blocks"]
     if IS_LAB:
         # Mark EVERY lab message so it's unmistakable from live alerts. No-op in
         # prod (IS_LAB is False there). Prefixes the notification text and, for

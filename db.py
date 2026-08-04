@@ -137,7 +137,37 @@ def append_predictions(rows: list[dict]) -> None:
          if k in _SCHEMA_COLS}
         for r in rows
     ]
+    # Stamp created_at on EVERY upsert (insert AND conflict-update). The table
+    # upserts on (date,ticker) and a column DEFAULT only fires on INSERT — so when a
+    # later scan re-picks the same ticker it UPDATEs the row and created_at stays
+    # frozen. The heartbeat keys off max(created_at) as its "last scan" freshness
+    # signal, so an afternoon of re-picking the same conviction names froze
+    # created_at and the heartbeat FALSE-ALARMED "scanner died" while scans were
+    # running fine. Writing it here advances it every scan (a real outage still
+    # freezes it, so real detection is preserved). Safe: the actual-move backfill
+    # ages by `date`, not created_at. (2026-06-25 — heartbeat false-positive fix)
+    _now = datetime.now(timezone.utc).isoformat()
+    for _c in clean:
+        _c["created_at"] = _now
     _client().table("predictions").upsert(clean, on_conflict="date,ticker").execute()
+
+
+def mark_scan_heartbeat() -> None:
+    """Stamp last_scan_at = now(UTC) in `system_state` at the END OF EVERY SCAN,
+    UNCONDITIONALLY — even when the scan upserts ZERO predictions (all repeats at or
+    below the day's stored score, which the H-19 score-preserving filter drops). The
+    freshness monitor (heartbeat.py) keys off this so it can't false-alarm on a
+    real-but-idle scan — the created_at trick only advances when rows are written
+    (Codex review 2026-06-30). Best-effort: never breaks a scan; no-ops if the
+    system_state table doesn't exist yet (run migrations/20260630_system_state.sql)
+    or on the read-only (AGG) client (which shouldn't own the heartbeat anyway)."""
+    try:
+        _client().table("system_state").upsert(
+            {"key": "last_scan_at", "value": datetime.now(timezone.utc).isoformat()},
+            on_conflict="key",
+        ).execute()
+    except Exception as e:
+        print(f"[heartbeat] mark_scan_heartbeat skipped ({e})")
 
 
 def update_actual_move(date_str: str, ticker: str, move: float) -> None:

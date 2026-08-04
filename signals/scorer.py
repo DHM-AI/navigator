@@ -298,6 +298,11 @@ def score_ticker(
         "bb_pct":             technicals["bb"]["width_percentile"],
         "atr_ratio":          technicals["atr"]["ratio"],
         "atr_pct":            technicals["atr"].get("pct", 0.0),
+        # close vs the PRIOR-10-session high (EXCLUDING the current bar [-11:-1]) — must
+        # match the backtest/dashboard. (Bug 2026-06-16: was [-10:] incl current bar →
+        # near_high ≤0 → filter rarely fired.) >-2% = at/above the high (PF 1.67 vs 2.30).
+        "near_high_pct":      ((float(ohlcv_df["Close"].iloc[-1]) / float(ohlcv_df["High"].iloc[-11:-1].max()) - 1) * 100
+                               if len(ohlcv_df) >= 11 and float(ohlcv_df["High"].iloc[-11:-1].max()) > 0 else -99.0),
         "volume_ratio":       technicals["vol"]["ratio"],
         "ema50_pct":          technicals["ema"]["ema50_pct"],
         "sentiment_score":    sentiment.get("score", 0.0),

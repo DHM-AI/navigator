@@ -1,0 +1,10 @@
+{
+  "trained_at": "2026-08-03T06:20:10.090168",
+  "trained_through": "2026-07-01",
+  "rows": 583434,
+  "tickers": 501,
+  "label": "long next-open, 5-session hold, must clear 0.200% cost without hitting -8% stop",
+  "label_positive_rate": 0.49202994683203244,
+  "eval_auc": 0.49812796730032494,
+  "deploy_fit": "all mature rows (not the 70% eval split)"
+}

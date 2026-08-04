@@ -24,8 +24,14 @@ from config import CANARY_MODE, CANARY_MAX_OPEN_POSITIONS, CANARY_MAX_DAILY_TRAD
 # Canary (live ramp-up) shrinks position count + daily trades; full-size values
 # live in the else branch. Flip CANARY_MODE in config.py to switch back.
 MAX_OPEN_POSITIONS  = CANARY_MAX_OPEN_POSITIONS if CANARY_MODE else 10  # max concurrent holdings
-MAX_SECTOR_PCT      = 0.35   # max 35% portfolio in one sector
-MAX_DAILY_TRADES    = CANARY_MAX_DAILY_TRADES if CANARY_MODE else 20    # max new auto-executions per day
+MAX_SECTOR_PCT      = 0.35   # max 35% portfolio (of EQUITY) in one sector
+# Deployed-book sector cap (2026-06-16, mirrored from acct2): the %-of-equity cap
+# rarely binds on a lightly-deployed book, yet the OPEN book can still be ~all one
+# correlated sector ("Technology" = semis+hardware+software) → a sector-down day hits
+# everything at once. Cap any one sector at this share of DEPLOYED capital.
+MAX_SECTOR_PCT_OF_BOOK     = 0.50   # max 50% of deployed $ in one sector
+MIN_POSITIONS_FOR_BOOK_CAP = 4      # only enforce once ≥4 positions (don't choke a small book)
+MAX_DAILY_TRADES    = CANARY_MAX_DAILY_TRADES if CANARY_MODE else 8     # max new auto-executions/day (Renato 2026-06-18: full mode but capped at 8/day)
 MAX_DIRECTION_PCT   = 0.80   # warn if >80% of positions same direction
 
 _sector_cache: dict[str, str] = {}  # ticker → sector (cached across calls)
@@ -372,11 +378,13 @@ def check_trade(
             print(f"[THEMIS] ⚠ {ticker} sector UNKNOWN (yfinance miss) — "
                   f"sector-concentration cap NOT enforced for this entry")
         if new_sector != "Unknown":
-            # Calculate current sector exposure
+            # Calculate current sector exposure + total deployed book
             sector_value = 0.0
+            book_value   = 0.0
             for pos in open_positions:
                 pos_ticker = pos.get("ticker", "")
                 pos_value  = abs(float(pos.get("market_value", 0)))
+                book_value += pos_value
                 pos_sector = _get_sector(pos_ticker)
                 if pos_sector == new_sector:
                     sector_value += pos_value
@@ -390,6 +398,20 @@ def check_trade(
                     f"{proposed_sector_pct:.0%} of portfolio in one sector "
                     f"(max {MAX_SECTOR_PCT:.0%})"
                 )
+
+            # Deployed-BOOK concentration cap — prevents the whole open book from
+            # being one correlated sector even when it's a small % of equity.
+            proposed_book = book_value + dollar_amount
+            n_after = len(open_positions) + 1
+            if proposed_book > 0 and n_after >= MIN_POSITIONS_FOR_BOOK_CAP:
+                sector_book_pct = (sector_value + dollar_amount) / proposed_book
+                if sector_book_pct > MAX_SECTOR_PCT_OF_BOOK:
+                    return False, (
+                        f"Sector book-concentration: adding {ticker} ({new_sector}) would put "
+                        f"{sector_book_pct:.0%} of DEPLOYED capital in one sector "
+                        f"(max {MAX_SECTOR_PCT_OF_BOOK:.0%}) — too correlated; a sector-down "
+                        f"day would hit the whole book at once"
+                    )
 
     # ── Check 5: Direction balance ─────────────────────────────────────────────
     if len(open_positions) >= 3:

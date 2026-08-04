@@ -31,20 +31,25 @@ FEATURE_COLS = [
 TEST_START = "2023-01"
 TRAIN_MIN_MONTHS = 16
 TIER_Q = 0.995                  # top 0.5% conviction
-ATR_MULT, ATR_FLOOR, ATR_CAP = 2.0, 0.03, 0.10
-HARD_MAX = 0.12
+# Stop constants from the LIVE config (Codex review 2026-06-30 — were hardcoded
+# 0.10/0.12, stale vs live 0.12/0.14). The POLICIES dict below is an intentional
+# exit-policy SWEEP and stays parameterized.
+ATR_MULT  = config.ATR_STOP_MULT        # 2.0
+ATR_FLOOR = config.ATR_STOP_FLOOR_PCT   # 0.03
+ATR_CAP   = config.ATR_STOP_CAP_PCT     # 0.12 (live; was 0.10)
+HARD_MAX  = config.HARD_MAX_LOSS_PCT    # 0.14 (live; was 0.12)
 COST = 0.20                     # round-trip cost % used for the after-cost ranking
 
 # Exit policies to compare. Each: partials [(trigger,frac),...], trail %, move-to-BE
 # after first partial, max hold (trading days), optional hard take-profit (exit all).
 POLICIES = {
-    "BASELINE 20/20/60 trail3 (live)": dict(parts=[(0.07, 0.20), (0.12, 0.20)], trail=0.03, be=True,  hold=7,  tp=None),
+    "BASELINE 20/20/60 trail3 (OLD live pre-2026-06-10)": dict(parts=[(0.07, 0.20), (0.12, 0.20)], trail=0.03, be=True,  hold=7,  tp=None),
     "wider trail 5%":                   dict(parts=[(0.07, 0.20), (0.12, 0.20)], trail=0.05, be=True,  hold=10, tp=None),
     "no partials, trail 4%":            dict(parts=[],                            trail=0.04, be=False, hold=10, tp=None),
     "no partials, trail 6%":            dict(parts=[],                            trail=0.06, be=False, hold=12, tp=None),
     "later/smaller 10&20, trail4":      dict(parts=[(0.10, 0.15), (0.20, 0.15)], trail=0.04, be=True,  hold=12, tp=None),
     "let runner ride (10/0/90) trail5": dict(parts=[(0.10, 0.10)],               trail=0.05, be=False, hold=12, tp=None),
-    "fixed TP +12% or stop (no trail)": dict(parts=[],                            trail=None, be=False, hold=10, tp=0.12),
+    "CURRENT live: fixed TP +20% or stop, no trail/no partials": dict(parts=[], trail=None, be=False, hold=5, tp=config.SWING_TP_PCT),
     "longer hold 15d, trail4":          dict(parts=[(0.07, 0.20), (0.12, 0.20)], trail=0.04, be=True,  hold=15, tp=None),
 }
 

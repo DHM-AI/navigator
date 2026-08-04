@@ -32,31 +32,39 @@ from config import (BANKROLL, ALPACA_API_KEY, ALPACA_SECRET_KEY,
                     ATR_STOP_FLOOR_PCT, ATR_STOP_CAP_PCT)
 
 
+def _effective_notional(dollar_amount: float, atr_pct: float, is_day_trade: bool) -> float:
+    """The ATR-rescaled notional the trade will ACTUALLY use (constant-$ risk) — PURE,
+    no side effects. Exposed so the pre-trade guards (sector-of-book cap, buying-power)
+    can size on the REAL footprint instead of the pre-shrink kelly notional, which
+    over-blocks them (Codex review 2026-06-30). Mirrors _resolve_stop_and_size's
+    shrink exactly. Swing: risk budget = dollar x floor%, notional = budget / stop_pct,
+    capped at dollar (only hold or shrink). DAY / zero-ATR: full notional."""
+    if is_day_trade:
+        return dollar_amount
+    if not ENABLE_ATR_STOPS or not atr_pct or atr_pct <= 0:
+        return dollar_amount
+    stop_pct = max(ATR_STOP_FLOOR_PCT, min(ATR_STOP_MULT * float(atr_pct), ATR_STOP_CAP_PCT))
+    if stop_pct <= 0:
+        return dollar_amount
+    return min(dollar_amount * ATR_STOP_FLOOR_PCT / stop_pct, dollar_amount)
+
+
 def _resolve_stop_and_size(dollar_amount: float, atr_pct: float,
                            is_day_trade: bool, ticker: str = "") -> tuple:
-    """Return (stop_pct, effective_notional) for a bracket entry.
+    """Return (stop_pct, effective_notional) for a bracket entry. effective_notional
+    == _effective_notional(...); this wrapper also returns the stop_pct and logs.
 
-    Swing trades use a volatility-adjusted stop = ATR_STOP_MULT x ATR%, clamped
-    to [ATR_STOP_FLOOR_PCT, ATR_STOP_CAP_PCT]. Position notional is then rescaled
-    so the DOLLAR risk per trade stays constant regardless of stop width:
-    risk budget = dollar_amount x floor%  (the original 3% risk), and
-    effective_notional = risk_budget / stop_pct. So a wider (more volatile) stop
-    -> smaller position, same $ at risk. Floor stop -> notional unchanged.
-
-    DAY trades and the disabled/zero-ATR path keep the legacy fixed stop and the
-    full notional (no rescale) — identical to prior behavior.
+    Swing trades use a volatility-adjusted stop = ATR_STOP_MULT x ATR%, clamped to
+    [ATR_STOP_FLOOR_PCT, ATR_STOP_CAP_PCT]; notional is rescaled so the DOLLAR risk
+    per trade stays constant (wider stop -> smaller position). DAY trades and the
+    disabled/zero-ATR path keep the legacy fixed stop and the full notional.
     """
     if is_day_trade:
         return DAY_TRADE_STOP_PCT, dollar_amount
     if not ENABLE_ATR_STOPS or not atr_pct or atr_pct <= 0:
         return KELLY_LOSS_PCT, dollar_amount
-    raw = ATR_STOP_MULT * float(atr_pct)
-    stop_pct = max(ATR_STOP_FLOOR_PCT, min(raw, ATR_STOP_CAP_PCT))
-    # Keep $ risk constant vs the floor (legacy 3%) baseline.
-    risk_budget = dollar_amount * ATR_STOP_FLOOR_PCT
-    effective_notional = risk_budget / stop_pct if stop_pct > 0 else dollar_amount
-    # Never upsize beyond the requested dollar amount (only hold or shrink).
-    effective_notional = min(effective_notional, dollar_amount)
+    stop_pct = max(ATR_STOP_FLOOR_PCT, min(ATR_STOP_MULT * float(atr_pct), ATR_STOP_CAP_PCT))
+    effective_notional = _effective_notional(dollar_amount, atr_pct, is_day_trade)
     if abs(effective_notional - dollar_amount) > 1:
         print(f"[APEX] {ticker}: ATR stop {stop_pct*100:.1f}% "
               f"(ATR {atr_pct*100:.1f}% x{ATR_STOP_MULT}) -> notional "
@@ -238,6 +246,85 @@ def get_current_price(ticker: str) -> float | None:
         return None
 
 
+# B2 fix (2026-07-30 forensic): the entry bracket used to anchor qty + stop + TP
+# to get_current_price() = the latest ASK only. On the free IEX feed the ask can
+# print anomalously high (stale/thin), so the absolute stop = ask*(1-sl_pct) landed
+# far tighter than intended (measured: ask avg +4.53% above the eventual fill → an
+# intended ~9.95% stop compressed to ~5.55% below the real fill), stopping trades
+# out on noise within hours. Anchor to the LAST TRADE (what actually printed),
+# guard the ask, and fall back ask→mid→None so callers keep their None-handling.
+ENTRY_ASK_ANOMALY_TOL = 0.015   # ask > last*(1+tol) ⇒ discard the ask, use last
+
+
+def _get_quote(ticker: str):
+    """Best-effort (bid, ask, last_trade) from Alpaca. Any leg may be None."""
+    try:
+        from alpaca.data.historical import StockHistoricalDataClient
+        from alpaca.data.requests import (StockLatestQuoteRequest,
+                                           StockLatestTradeRequest)
+        dc = StockHistoricalDataClient(ALPACA_API_KEY, ALPACA_SECRET_KEY)
+        bid = ask = last = None
+        try:
+            q = dc.get_stock_latest_quote(
+                StockLatestQuoteRequest(symbol_or_symbols=ticker))[ticker]
+            bid = float(q.bid_price) if q.bid_price else None
+            ask = float(q.ask_price) if q.ask_price else None
+        except Exception:
+            pass
+        try:
+            tr = dc.get_stock_latest_trade(
+                StockLatestTradeRequest(symbol_or_symbols=ticker))[ticker]
+            last = float(tr.price) if tr.price else None
+        except Exception:
+            pass
+        return bid, ask, last
+    except Exception:
+        return None, None, None
+
+
+def _entry_reference_price(ticker: str) -> float | None:
+    """Robust entry-anchor price for sizing + bracket legs (prefers last trade)."""
+    bid, ask, last = _get_quote(ticker)
+    ref = None
+    if last and last > 0:
+        ref = last
+        if ask and ask > last * (1 + ENTRY_ASK_ANOMALY_TOL):
+            print(f"[APEX] {ticker} ask ${ask:.2f} is {(ask/last-1)*100:.1f}% above last "
+                  f"${last:.2f} — anchoring entry to last trade (anomalous-ask guard)")
+    elif bid and ask and bid > 0 and ask > 0:
+        ref = round((bid + ask) / 2, 4)          # mid when no last trade
+    elif ask and ask > 0:
+        ref = ask                                # last resort: the old behavior
+    return float(ref) if ref else None
+
+
+# B2 invariant tolerance: how far below the intended stop width the REALIZED
+# width may sit before we alert (absolute, in stop-percent terms).
+STOP_WIDTH_TOLERANCE = 0.01     # 1 percentage point
+
+
+def _poll_filled_avg_price(client, order_id: str, tries: int = 6,
+                           delay: float = 0.5) -> float | None:
+    """Read-only: poll an order briefly for its actual filled_avg_price.
+
+    Mirrors the polling already used by _place_simple_order. Places/cancels
+    nothing — it only reads the order back to measure the real fill.
+    """
+    import time as _t
+    for _ in range(tries):
+        try:
+            _o = client.get_order_by_id(order_id)
+            _px = float(getattr(_o, "filled_avg_price", None) or 0) or None
+            if _px:
+                return _px
+            if order_status(_o) in ("canceled", "rejected", "expired"):
+                return None
+        except Exception:
+            pass
+        _t.sleep(delay)
+    return None
+
+
 def _check_daily_loss_limit() -> bool:
     """Returns True if safe to trade, False if daily loss limit breached."""
     try:
@@ -327,7 +414,10 @@ def place_order(ticker: str, dollar_amount: float, direction: str,
     # Bracket orders consume DT-BP, not regular BP. With 10+ positions open
     # this gets exhausted fast. Skipping early avoids the noisy Slack-spam
     # of 10 simultaneous "insufficient day trading buying power" failures.
-    bp_ok, bp_reason = _check_buying_power(dollar_amount, ticker)
+    # Check against the ATR-shrunk notional we'll ACTUALLY deploy (constant-$ risk),
+    # not the pre-shrink kelly amount — else we over-block (Codex review 2026-06-30).
+    _eff_notional = _effective_notional(dollar_amount, atr_pct, _is_day_trade)
+    bp_ok, bp_reason = _check_buying_power(_eff_notional, ticker)
     if not bp_ok:
         print(f"[APEX] {ticker} skipped — {bp_reason}")
         return {"status": "skipped", "ticker": ticker, "reason": bp_reason}
@@ -379,8 +469,11 @@ def place_order(ticker: str, dollar_amount: float, direction: str,
                     "reason": f"Could not verify shortability for {ticker}",
                     "ticker": ticker}
 
-    # Get current price to calculate SL/TP and convert notional → shares
-    price = get_current_price(ticker)
+    # Get current price to calculate SL/TP and convert notional → shares.
+    # B2 fix (2026-07-30): anchor to the LAST TRADE (with an anomalous-ask guard)
+    # rather than the raw latest ask — a high/stale ask silently compressed every
+    # bracket stop toward the fill and stopped trades out on noise.
+    price = _entry_reference_price(ticker)
 
     # Fallback: try yfinance if Alpaca data feed fails.
     # N-9 fix: yfinance.download() doesn't expose a `timeout` param so a
@@ -432,14 +525,17 @@ def place_order(ticker: str, dollar_amount: float, direction: str,
     except ImportError:
         _SWING_TP = MOVE_TARGET_PCT
     _tp_pct = DAY_TRADE_TARGET_PCT if _is_day_trade else _SWING_TP
-    _sl_pct, _effective_notional = _resolve_stop_and_size(
+    _sl_pct, _resolved_notional = _resolve_stop_and_size(
         dollar_amount, atr_pct, _is_day_trade, ticker)
     # Audit H1 (2026-06-02): if the ATR-rescaled notional rounds to < 1 share,
     # SKIP rather than force max(1,...). Forcing 1 share breaks the constant-$
     # risk guarantee (1 share of a high-priced name can exceed the risk budget).
-    qty = round(_effective_notional / price)
+    # NB: this local MUST NOT be named `_effective_notional` — that shadows the
+    # module-level helper called at the BP-check above and triggers an
+    # UnboundLocalError that silently blocked every trade (2026-07-06 fix).
+    qty = round(_resolved_notional / price)
     if qty < 1:
-        print(f"[APEX] {ticker} skipped — ATR-sized notional ${_effective_notional:.0f} "
+        print(f"[APEX] {ticker} skipped — ATR-sized notional ${_resolved_notional:.0f} "
               f"@ ${price:.2f} rounds to <1 share (would break constant-$ risk)")
         return {"status": "skipped", "ticker": ticker,
                 "reason": f"Position too small after ATR sizing (<1 share @ ${price:.2f})"}
@@ -495,6 +591,32 @@ def place_order(ticker: str, dollar_amount: float, direction: str,
             "execution_path": execution_path,
         }
 
+        # B2 invariant (2026-07-30 forensic, READ-ONLY): the bracket's child legs
+        # are absolute prices anchored to `price` BEFORE the fill. If the fill comes
+        # in materially away from that anchor, the REAL stop width is not the
+        # intended _sl_pct. Measure it and alert — never silently claim the
+        # intended ATR width. This only observes; it places/cancels nothing.
+        try:
+            _fill_px = _poll_filled_avg_price(client, str(order.id))
+            if _fill_px and _fill_px > 0:
+                _actual_w = abs(_fill_px - stop_price) / _fill_px
+                result["fill_price"] = _fill_px
+                result["stop_width_intended"] = round(_sl_pct, 4)
+                result["stop_width_actual"] = round(_actual_w, 4)
+                if _actual_w < _sl_pct - STOP_WIDTH_TOLERANCE:
+                    _m = (f"{ticker} stop width {_actual_w*100:.2f}% vs intended "
+                          f"{_sl_pct*100:.2f}% (fill ${_fill_px:.2f} vs anchor ${price:.2f})")
+                    print(f"[APEX] ⚠ STOP-WIDTH INVARIANT: {_m}")
+                    result["stop_width_violation"] = True
+                    try:
+                        from alerts.slack import _post
+                        _post({"text": (f"⚠️ *Stop width tighter than intended* — {_m}\n"
+                                        f">Bracket legs were anchored pre-fill; review entry pricing.")})
+                    except Exception:
+                        pass
+        except Exception as _inv_e:
+            print(f"[APEX] stop-width invariant check skipped: {_inv_e}")
+
         try:
             import db
             if db.db_available():
@@ -521,7 +643,7 @@ def place_order(ticker: str, dollar_amount: float, direction: str,
                     else:
                         stop_price  = round(actual_price * (1 + _sl_pct), 2)
                         limit_price = round(actual_price * (1 - _tp_pct), 2)
-                    qty = round(_effective_notional / actual_price)
+                    qty = round(_resolved_notional / actual_price)
                     if qty < 1:
                         print(f"[APEX] {ticker} retry skipped — <1 share at corrected ${actual_price:.2f}")
                         return {"status": "skipped", "ticker": ticker,
@@ -580,7 +702,13 @@ def place_order(ticker: str, dollar_amount: float, direction: str,
             # Finding #11 (2026-06-08): pass atr_pct/is_day_trade so the simple
             # order can attach a standalone stop at the SAME intended level the
             # bracket would have used.
-            return _place_simple_order(ticker, dollar_amount, side, mode, reason,
+            # B5 fix (2026-07-30 forensic): pass the ATR-SHRUNK _resolved_notional,
+            # not the raw dollar_amount. The old code bought full pre-shrink notional
+            # (up to ~4x the constant-$ risk budget, CAP 0.12 / FLOOR 0.03) then
+            # attached the wide ATR stop. _sl_pct depends only on atr_pct (unchanged)
+            # and _place_simple_order discards its re-resolved notional, so no
+            # double-shrink — risk becomes _resolved_notional*stop_pct = constant.
+            return _place_simple_order(ticker, _resolved_notional, side, mode, reason,
                                        atr_pct=atr_pct, is_day_trade=_is_day_trade)
         # Non-recoverable — refuse and alert
         print(f"[APEX] Bracket failed ({e}) — NOT falling back (would create naked position).")
@@ -1026,47 +1154,69 @@ def close_position(ticker: str) -> dict:
 
         client = _get_client()
 
-        # Cancel ALL active orders for this ticker (open + held + new + accepted)
-        # CRITICAL-2: compare via norm_symbol — crypto positions are 'BTCUSD'
-        # while their resting orders are 'BTC/USD'; a raw != skipped them all.
-        try:
-            all_orders = client.get_orders(GetOrdersRequest(
-                status=QueryOrderStatus.ALL, limit=400))
-            cancelled = 0
-            for o in all_orders:
-                if norm_symbol(o.symbol) != norm_symbol(ticker):
-                    continue
-                if not is_active_order(o):
-                    continue
+        # ── Cancel → VERIFY released → close, re-cancelling each pass ─────────
+        # 2026-07-22 fix. Friday 7/17 the noon flatten FAILED on PANW: both close
+        # attempts hit "insufficient qty available (held_for_orders: 105)". The
+        # old flow cancelled ONCE then slept blind — but a fresh AEGIS stop landed
+        # at 12:00 ET, racing the flatten and re-holding the shares, so both
+        # closes fired against dead qty and gave up. Cost: a +$430 flatten became
+        # a −$720 weekend stop-out. Blind sleeps can't win that race. Each pass
+        # now (a) re-cancels EVERY active order on the ticker — including one
+        # placed since the previous pass — then (b) POLLS the position's
+        # qty_available until Alpaca actually releases the shares, and only then
+        # (c) closes. Three passes beats any 30-min-cadence re-stopper (AEGIS
+        # can't re-arm within seconds); a real API outage still fails loudly.
+        # CRITICAL-2 (kept): compare via norm_symbol — crypto positions are
+        # 'BTCUSD' while their resting orders are 'BTC/USD'; positions endpoint
+        # is slashless.
+        _last_err = None
+        for _attempt in range(3):
+            # (a) cancel everything active on this ticker
+            try:
+                all_orders = client.get_orders(GetOrdersRequest(
+                    status=QueryOrderStatus.ALL, limit=400))
+                for o in all_orders:
+                    if norm_symbol(o.symbol) != norm_symbol(ticker):
+                        continue
+                    if not is_active_order(o):
+                        continue
+                    try:
+                        client.cancel_order_by_id(str(o.id))
+                    except Exception:
+                        pass
+            except Exception as _ce:
+                # M-2 (kept): if the whole cancel pass fails (API down, auth
+                # broken) the close below will also fail — this line says why.
+                print(f"[close_position] {ticker} cancel pass {_attempt + 1} failed: {_ce}")
+            # (b) poll until the held shares are actually RELEASED (≤8s/pass)
+            for _ in range(8):
+                _time.sleep(1.0)
                 try:
-                    client.cancel_order_by_id(str(o.id))
-                    cancelled += 1
+                    _pos = client.get_open_position(norm_symbol(ticker))
+                    _avail = abs(float(getattr(_pos, "qty_available", 0) or 0))
+                    if _avail >= abs(float(_pos.qty)) - 1e-9:
+                        break                      # fully released — safe to close
                 except Exception:
-                    pass
-            # Give Alpaca a moment to release the held shares
-            if cancelled:
-                _time.sleep(2.0)
-        except Exception as _ce:
-            # M-2 fix: if the WHOLE cancel-loop fails (Alpaca API down, auth
-            # broken), proceed-to-close at line 730 will also fail confusingly.
-            # One log line tells us why.
-            print(f"[close_position] {ticker} pre-cancel loop failed: {_ce}")
-
-        # Close the position — retry once with a longer wait if first attempt fails
-        # CRITICAL-2: the positions endpoint is slashless ('BTCUSD'); an
-        # unencoded 'BTC/USD' 404s and the naked-guard close can never succeed.
-        try:
-            client.close_position(norm_symbol(ticker))
-        except Exception as first_err:
-            if "insufficient" in str(first_err).lower() or "held" in str(first_err).lower():
-                _time.sleep(1.5)
-                try:
-                    result = client.close_position(norm_symbol(ticker))
-                except Exception as _e2:
-                    print(f"[ALPACA] close_position retry also failed for {ticker}: {_e2}")
-                    return {"status": "error", "ticker": ticker, "message": f"Both close attempts failed: {_e2}"}
-            else:
-                raise
+                    break                          # position gone → nothing held
+            # (c) close
+            try:
+                client.close_position(norm_symbol(ticker))
+                _last_err = None
+                break
+            except Exception as _e:
+                _last_err = _e
+                _s = str(_e).lower()
+                if "position does not exist" in _s or "position not found" in _s:
+                    _last_err = None               # already flat — success by another path
+                    break
+                if "insufficient" not in _s and "held" not in _s:
+                    raise                          # unrelated error — surface as before
+                # shares re-held (a new order grabbed them) → next pass re-cancels
+        if _last_err is not None:
+            print(f"[ALPACA] close_position gave up for {ticker} after 3 "
+                  f"cancel→verify→close passes: {_last_err}")
+            return {"status": "error", "ticker": ticker,
+                    "message": f"close failed after 3 passes: {_last_err}"}
 
         # R-4 fix: write a status="closed" row so get_partial_exit_history()'s
         # last_close lookup actually works. Without this row, partial-exit

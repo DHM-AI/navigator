@@ -168,6 +168,106 @@ def place_option_order(
     }
 
 
+def close_option_position(
+    contract_symbol: str,
+    qty: int,
+    limit_price: float | None = None,
+    dry_run: bool = True,
+) -> dict:
+    """SELL-TO-CLOSE an existing LONG option PAPER position.
+
+    This CLOSES a long position (sells contracts already owned). It does NOT open a
+    short — `position_intent` is "sell_to_close", `side` is "sell". Same gates and
+    paper-only posture as place_option_order.
+
+    GATES (checked in order):
+      1. OPT_ENABLE_PAPER False                  -> {"status":"disabled"}
+      2. OPT_ENABLE_LIVE True (must never be)     -> {"status":"refused_live"}
+      3. qty <= 0                                 -> {"status":"skipped_zero_qty"}
+
+    dry_run=True (default) builds + validates the request dict and returns it WITHOUT
+    submitting. dry_run=False submits a PAPER order (limit if a price is given, market
+    otherwise). Network/non-2xx errors return {"status":"error",...} and never raise.
+    """
+    # Gate 1 — paper must be enabled.
+    if not OPT_ENABLE_PAPER:
+        return {"status": "disabled", "reason": "OPT_ENABLE_PAPER is False"}
+
+    # Gate 2 — HARD live gate. This module has no live path; refuse outright.
+    if OPT_ENABLE_LIVE:
+        return {
+            "status": "refused_live",
+            "reason": "OPT_ENABLE_LIVE is True — options must never trade live",
+        }
+
+    # Gate 3 — nothing to do for non-positive quantity.
+    try:
+        qty_int = int(qty)
+    except (TypeError, ValueError):
+        qty_int = 0
+    if qty_int <= 0:
+        return {"status": "skipped_zero_qty", "qty": qty_int}
+
+    # Build the closing order request. SELL to close a LONG position — never a short.
+    order_req: dict = {
+        "symbol": contract_symbol,
+        "qty": str(qty_int),
+        "side": "sell",
+        "type": "limit" if limit_price is not None else "market",
+        "time_in_force": "day",
+        "position_intent": "sell_to_close",
+    }
+    if limit_price is not None:
+        order_req["limit_price"] = str(round(float(limit_price), 2))
+
+    # dry_run — validate + return the request WITHOUT submitting.
+    if dry_run:
+        return {
+            "status": "dry_run",
+            "request": order_req,
+            "endpoint": f"{PAPER_TRADING_BASE}/v2/orders",
+            "live": False,
+        }
+
+    # Real submit (PAPER only).
+    try:
+        resp = requests.post(
+            f"{PAPER_TRADING_BASE}/v2/orders",
+            headers=_headers(),
+            json=order_req,
+            timeout=_TIMEOUT,
+        )
+    except Exception as exc:  # network failure — never crash the caller
+        return {"status": "error", "reason": f"request_failed: {exc}", "request": order_req}
+
+    if resp.status_code in (200, 201):
+        try:
+            body = resp.json()
+        except Exception:
+            body = {}
+        return {
+            "status": "submitted",
+            "order_id": body.get("id"),
+            "symbol": body.get("symbol", contract_symbol),
+            "qty": body.get("qty", str(qty_int)),
+            "side": body.get("side", "sell"),
+            "order_status": body.get("status"),
+            "request": order_req,
+        }
+
+    # Non-2xx — surface the error without raising.
+    try:
+        err = resp.json()
+    except Exception:
+        err = {"message": resp.text[:300]}
+    return {
+        "status": "error",
+        "http_status": resp.status_code,
+        "reason": err.get("message", "submit_failed"),
+        "request": order_req,
+    }
+
+
 def get_option_positions() -> list[dict]:
     """Return current PAPER option positions only.
 

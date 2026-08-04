@@ -10,6 +10,11 @@ logs/
 
 # Large training cache (regenerate locally with python -m model.trainer --refetch)
 model/saved/training_data.parquet
+# Point-in-time survivorship cache — same rule, rebuild with build_pit_parquet.py
+model/saved/training_data_pit.parquet
+# Shadow-model runtime log — appended every daily shadow scan, so committing it
+# would dirty the tree on every run. Read it with shadow_compare.py.
+model/saved/shadow_picks.jsonl
 
 # Python
 __pycache__/

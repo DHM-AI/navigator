@@ -70,13 +70,14 @@ def round_trips(fills):
         start = pos.get(tk, 0.0) - inwin
         lots = deque()
         if abs(start) > 1e-6:
-            lots.append([1 if start > 0 else -1, abs(start), float(fl[0]["price"]), None, True])
+            lots.append([1 if start > 0 else -1, abs(start), float(fl[0]["price"]), None, True, None])
         for f in fl:
             q, px = float(f["qty"]), float(f["price"])
             sgn = 1 if f["side"] in ("buy", "buy_to_cover") else -1
             t = _pts(f["transaction_time"])
+            oid = f.get("order_id")
             if not lots or (lots[0][0] > 0) == (sgn > 0):
-                lots.append([sgn, q, px, t, False])
+                lots.append([sgn, q, px, t, False, oid])
             else:
                 r = q
                 while r > 1e-9 and lots and (lots[0][0] > 0) != (sgn > 0):
@@ -90,14 +91,76 @@ def round_trips(fills):
                             "entry_t": lot[3], "exit_t": t,
                             "dir": "long" if lot[0] > 0 else "short",
                             "pnl_pct": (px - lot[2]) / lot[2] * 100 * (1 if lot[0] > 0 else -1),
+                            # B1 fix (2026-07-30 forensic): keep the order ids so
+                            # split fills can be coalesced into ECONOMIC trades.
+                            "entry_oid": lot[5], "exit_oid": oid,
                         })
                     lot[1] -= m
                     r -= m
                     if lot[1] <= 1e-9:
                         lots.popleft()
                 if r > 1e-9:
-                    lots.append([sgn, r, px, t, False])
+                    lots.append([sgn, r, px, t, False, oid])
     return trips
+
+
+def coalesce(trips):
+    """Collapse fill-SLICES into ECONOMIC trades (B1 fix, 2026-07-30 forensic).
+
+    Alpaca splits one stop order into many FILL activities (this account: 8 stop
+    orders arrived as 43 slices). The seeded-FIFO matcher emits one trip per
+    matched slice, so `len(trips)` counted 44 "round-trips" and the win rate read
+    2% when there were really 9 trading decisions, 1 of them a winner (11%).
+    Net P&L and PF are sums and stay identical either way.
+
+    Groups by (entry_order_id, exit_order_id); slices with no order id fall back
+    to their own group so nothing is silently merged.
+    """
+    groups = defaultdict(list)
+    for i, t in enumerate(trips):
+        key = (t["tk"], t.get("entry_oid"), t.get("exit_oid"))
+        if key[1] is None or key[2] is None:
+            key = (t["tk"], f"_slice{i}", None)     # ungroupable: keep standalone
+        groups[key].append(t)
+
+    out = []
+    for (tk, _e, _x), sl in groups.items():
+        qty = sum(s["qty"] for s in sl)
+        pnl = sum(s["pnl"] for s in sl)
+        if qty <= 0:
+            continue
+        entry_px = sum(s["entry_px"] * s["qty"] for s in sl) / qty   # qty-weighted
+        exit_px = sum(s["exit_px"] * s["qty"] for s in sl) / qty
+        first = min(sl, key=lambda s: s["entry_t"])
+        last = max(sl, key=lambda s: s["exit_t"])
+        out.append({
+            "tk": tk, "pnl": pnl, "qty": qty,
+            "entry_px": entry_px, "exit_px": exit_px,
+            "entry_t": first["entry_t"], "exit_t": last["exit_t"],
+            "dir": first["dir"],
+            "pnl_pct": (exit_px - entry_px) / entry_px * 100 * (1 if first["dir"] == "long" else -1),
+            "entry_oid": first.get("entry_oid"), "exit_oid": last.get("exit_oid"),
+            "slices": len(sl),
+        })
+    out.sort(key=lambda t: t["exit_t"])
+    return out
+
+
+def fetch_order_types(trips):
+    """Read the REAL exit order type (stop/limit/market) — not a P&L proxy.
+
+    Read-only GETs against /v2/orders/{id}. Any failure leaves the exit unlabeled
+    ("?") rather than guessing, so the report can never claim a stop it can't prove.
+    """
+    types, seen = {}, {t.get("exit_oid") for t in trips if t.get("exit_oid")}
+    for oid in seen:
+        try:
+            r = requests.get(f"{BASE}/v2/orders/{oid}", headers=H, timeout=15).json()
+            if isinstance(r, dict):
+                types[oid] = (r.get("order_type") or r.get("type") or "?").lower()
+        except Exception:
+            pass
+    return types
 
 
 def fetch_scores():
@@ -126,7 +189,8 @@ def fetch_scores():
 ET = timezone(timedelta(hours=-4))  # EDT (June); fine for this window
 
 
-def bucketize(trips, scores):
+def bucketize(trips, scores, order_types=None):
+    order_types = order_types or {}
     for t in trips:
         et_in = t["entry_t"].astimezone(ET)
         t["hour"] = et_in.hour
@@ -139,10 +203,17 @@ def bucketize(trips, scores):
             d2 = (et_in - timedelta(days=1)).strftime("%Y-%m-%d")
             sc = scores.get((d2, t["tk"]))
         t["score"] = sc
-        p = t["pnl_pct"]
-        t["exit_kind"] = ("stop" if p <= -2.5 else
-                          "big_win" if p >= 6.5 else
-                          "trail/manual")
+        # B1 fix (2026-07-30 forensic): classify the exit by the ACTUAL order type
+        # read back from Alpaca. The old `pnl_pct <= -2.5 => "stop"` proxy labeled
+        # by outcome, so a stop that lost 1% was filed as "trail/manual" and any
+        # -3% manual close was mislabeled a stop. Unknown stays "?" — never guessed.
+        _ot = order_types.get(t.get("exit_oid"))
+        if _ot:
+            t["exit_kind"] = ("stop" if "stop" in _ot else
+                              "take_profit" if "limit" in _ot else
+                              "market" if "market" in _ot else _ot)
+        else:
+            t["exit_kind"] = "?"
         t["px_band"] = ("<5" if t["entry_px"] < 5 else "5-20" if t["entry_px"] < 20 else
                         "20-100" if t["entry_px"] < 100 else "100+")
         t["hold_band"] = ("<4h" if t["hold_h"] < 4 else "4-24h" if t["hold_h"] < 24 else
@@ -171,12 +242,18 @@ def table(trips, key, title):
 def main(days=60):
     fills = fetch_fills(days)
     print(f"fills fetched: {len(fills)}")
-    trips = round_trips(fills)
+    slices = round_trips(fills)
+    # B1 fix (2026-07-30 forensic): report ECONOMIC trades, not fill slices.
+    trips = coalesce(slices)
+    order_types = fetch_order_types(trips)
     scores = fetch_scores()
-    bucketize(trips, scores)
+    bucketize(trips, scores, order_types)
     w = [t["pnl"] for t in trips if t["pnl"] > 0]
     l = [t["pnl"] for t in trips if t["pnl"] <= 0]
-    print(f"\n===== OVERALL: {len(trips)} round-trips / {days}d =====")
+    _split = sum(1 for t in trips if t.get("slices", 1) > 1)
+    print(f"\n===== OVERALL: {len(trips)} economic trades / {days}d =====")
+    print(f"  (from {len(slices)} fill slices; {_split} order(s) arrived split — "
+          f"slices are NOT trades)")
     print(f"  net ${sum(w)+sum(l):+,.0f} | win {len(w)/max(len(trips),1)*100:.0f}% | "
           f"PF {sum(w)/abs(sum(l) or 1):.2f} | avgW ${sum(w)/max(len(w),1):+.0f} avgL ${sum(l)/max(len(l),1):+.0f}")
     table(trips, "hour", "BY ENTRY HOUR (ET)")
@@ -185,7 +262,7 @@ def main(days=60):
     table(trips, "score_band", "BY MODEL SCORE AT ENTRY")
     table(trips, "hold_band", "BY HOLD TIME")
     table(trips, "px_band", "BY ENTRY PRICE BAND")
-    table(trips, "exit_kind", "BY EXIT KIND (approx)")
+    table(trips, "exit_kind", "BY EXIT KIND (actual order type)")
     # worst/best tickers
     g = defaultdict(float)
     n = defaultdict(int)
@@ -195,10 +272,10 @@ def main(days=60):
     rk = sorted(g.items(), key=lambda kv: kv[1])
     print("\n=== WORST 10 TICKERS ===")
     for k, v in rk[:10]:
-        print(f"  {k:6} {v:>+8.0f}  ({n[k]} trips)")
+        print(f"  {k:6} {v:>+8.0f}  ({n[k]} trades)")
     print("=== BEST 10 TICKERS ===")
     for k, v in rk[-10:][::-1]:
-        print(f"  {k:6} {v:>+8.0f}  ({n[k]} trips)")
+        print(f"  {k:6} {v:>+8.0f}  ({n[k]} trades)")
     # daily P&L curve, last 15 days with trades
     dg = defaultdict(float)
     for t in trips:

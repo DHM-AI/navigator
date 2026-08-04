@@ -22,7 +22,7 @@ import pandas as pd
 from datetime import datetime
 
 from data.universe import get_universe
-from data.fetcher import get_ohlcv_batch, get_earnings_days
+from data.fetcher import get_ohlcv_batch, get_earnings_days, drop_partial_bar
 from data.research import research_universe
 from signals.sentiment import get_sentiment_with_velocity
 from signals.kelly import annotate_picks
@@ -67,7 +67,8 @@ def _execute_trades(picks_df: pd.DataFrame, explanations: dict,
     """Auto-execute High-confidence picks via Alpaca (paper by default)."""
     from execution.alpaca import (is_configured, place_order, is_live_mode,
                                   get_positions, get_account, reset_bp_cache,
-                                  place_crypto_order, place_iron_butterfly)
+                                  place_crypto_order, place_iron_butterfly,
+                                  _effective_notional)
     from data.universe import is_crypto
     from config import (CRYPTO_YFINANCE_TO_ALPACA, ENABLE_CRYPTO,
                         ENABLE_OPTIONS, OPTIONS_MIN_SCORE, OPTIONS_EARNINGS_WINDOW)
@@ -261,6 +262,23 @@ def _execute_trades(picks_df: pd.DataFrame, explanations: dict,
             _record_block(ticker, _msg)
             continue
 
+        # ── Near-high filter (2026-06-16, mirrored from acct2) ────────────────
+        # Skip picks bought right at/above the prior 10-session high. Full
+        # walk-forward: at-the-high PF 1.67 vs 2.30 on pullbacks; skip-within-2%
+        # lifts PF 2.12→2.26 keeping 79%. Caught TER/AMD/HOOD/INTC at the high.
+        try:
+            from config import ENABLE_NEAR_HIGH_FILTER as _nh_on, NEAR_HIGH_BAND_PCT as _nh_band
+        except ImportError:
+            _nh_on, _nh_band = False, 2.0
+        _nh = float(row.get("near_high_pct", -99.0) or -99.0)
+        if _nh_on and _nh > -_nh_band:
+            _msg = (f"Near-high filter — bought {_nh:+.1f}% vs the 10-day high "
+                    f"(within {_nh_band:.0f}% of it); at-the-high entries underperform "
+                    f"(PF 1.67 vs 2.30 pullback)")
+            print(f"  {ticker}: BLOCKED — {_msg}")
+            _record_block(ticker, _msg)
+            continue
+
         # Hard stop — enforce position + trade limits using in-run counters
         # N-5 fix: refresh open_positions live from Alpaca every 5 picks so
         # the position-count gate doesn't get fooled by stale state from the
@@ -298,8 +316,12 @@ def _execute_trades(picks_df: pd.DataFrame, explanations: dict,
                 dollar = round(dollar * multiplier, 2)
                 print(f"  {ticker}: position reduced to ${dollar:.0f} (regime multiplier {multiplier:.0%})")
 
-        # Portfolio guard check (duplicate detection, sector limits, etc.)
-        ok, guard_reason = check_trade(ticker, dollar, direction, open_positions, portfolio_value)
+        # Portfolio guard check (duplicate detection, sector limits, etc.) — size it on
+        # the ATR-shrunk notional we'll ACTUALLY deploy, not the pre-shrink kelly amount,
+        # so the sector-of-book cap measures the real footprint and doesn't over-block
+        # (Codex review 2026-06-30).
+        _eff_dollar = _effective_notional(dollar, _atr_pct, str(duration).startswith("1d"))
+        ok, guard_reason = check_trade(ticker, _eff_dollar, direction, open_positions, portfolio_value)
         if not ok:
             print(f"  {ticker}: BLOCKED by portfolio guard — {guard_reason}")
             _record_block(ticker, guard_reason)
@@ -551,6 +573,14 @@ def run_scan(send_email: bool = True,
     print(f"\n[ARGUS] SCAN — {len(tickers)} tickers")
     ohlcv_map = get_ohlcv_batch(tickers, period="1y", chunk_size=50)
     print(f"      Got data for {len(ohlcv_map)} tickers")
+    # 2026-07-14: score + predict on COMPLETE sessions only. The scan runs intraday,
+    # so the last bar is a partial session that (a) makes volume_surge unfirable in
+    # the entry window, (b) falsely trips atr_compression, (c) reads an unclosed
+    # candle, and (d) feeds the model a bar distribution it never trained on.
+    # See data/fetcher.drop_partial_bar(). Execution price is a LIVE quote — unaffected.
+    _pre = len(ohlcv_map)
+    ohlcv_map = {t: drop_partial_bar(df) for t, df in ohlcv_map.items()}
+    print(f"      Using complete sessions only (partial intraday bar dropped) — {_pre} tickers")
     _backfill_actual_moves(ohlcv_map)
 
     # ── 2. Research (parallel) ────────────────────────────────────
@@ -677,6 +707,16 @@ def run_scan(send_email: bool = True,
             print(f"      score-preserve merge skipped ({_me}) — writing all rows")
         db.append_predictions(_out_rows)
         print(f"      Saved {len(_out_rows)} predictions to Supabase")
+        # ── HEARTBEAT SURRENDERED TO ACCOUNT 2 (2026-07-15) ───────────────────
+        # This account's ($150k MAIN) Alpaca account was DELETED 2026-07-14. This
+        # scanner still runs and still writes predictions (which feed the dashboard
+        # picks + ORACLE), but every Alpaca call 401s and it falls back to a FAKE
+        # $153k bankroll — it cannot trade. It must therefore NOT claim liveness:
+        # stamping the heartbeat from a dead account made the freshness monitor a
+        # FALSE ALL-CLEAR that would hide a real outage of the $1M scanner (the only
+        # one that actually trades). acct-2's agent.py now owns mark_scan_heartbeat().
+        # Restore this line only if this account is ever re-funded and trading again.
+        # db.mark_scan_heartbeat()   # ← intentionally disabled; acct-2 owns liveness
 
     # Alpaca execution
     if execute_trades:
