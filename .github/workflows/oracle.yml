@@ -13,7 +13,21 @@ on:
 jobs:
   oracle:
     runs-on: ubuntu-latest
-    timeout-minutes: 10
+    # ⛔⛔ RAISED 10 -> 30 on 2026-08-04. ORACLE had NEVER COMPLETED A SINGLE RUN.
+    # Every scheduled run since at least 2026-07-29 was killed at the cap — the
+    # durations read 10m17s, 10m18s, 10m20s, 10m21s, 10m25s, which is the timeout,
+    # not the job. GitHub reports a timeout kill as "cancelled", NOT "failure", so
+    # it never turned a run red, never alerted, and never appeared in
+    # `gh run list --status failure`. Weeks of silence that looked like health.
+    # ⭐ Learnings still had today's date, which is what made it invisible: ORACLE
+    #    writes the learning record partway through, then gets killed before
+    #    finishing the rest of the cycle. A fresh timestamp proved it STARTED,
+    #    and was read as proof it worked.
+    # ⛔ Do not lower this to make the run "fit" — measure a completed run first.
+    #    Safe to let it finish: the ORACLE score adjustment is clamped [0, +10]
+    #    and stricter-only, so a completing cycle can tighten the auto-exec bar
+    #    but can never loosen risk.
+    timeout-minutes: 30
 
     env:
       ANTHROPIC_API_KEY:  ${{ secrets.ANTHROPIC_API_KEY }}
