@@ -96,7 +96,12 @@ jobs:
           exit 1
 
       - name: Notify Slack on completion
-        if: always()
+        # Slack alerts OFF (Renato 2026-08-14 "stop them all"). This step curls the
+        # webhook straight from YAML, so the Python kill switch in alerts/slack.py
+        # cannot reach it — it needs its own gate. An unset repo variable evaluates
+        # to "", so the default is SKIPPED. Re-enable by setting the repo variable
+        # ILLUMINATI_SLACK=1 (Settings -> Secrets and variables -> Actions -> Variables).
+        if: always() && vars.ILLUMINATI_SLACK == '1'
         run: |
           STATUS="${{ job.status }}"
           if [ "$STATUS" = "success" ]; then
