@@ -22,6 +22,21 @@ IS_LAB     = SYSTEM_ENV == "lab"
 ANTHROPIC_API_KEY  = os.getenv("ANTHROPIC_API_KEY", "")
 ALPHA_VANTAGE_KEY  = os.getenv("ALPHA_VANTAGE_KEY", "")
 SLACK_WEBHOOK_URL  = os.getenv("SLACK_WEBHOOK_URL", "")
+
+# ── SLACK ALERTS: MASTER KILL SWITCH (Renato, 2026-08-14: "stop them all") ────
+# OFF. Every Slack message on this account funnels through alerts/slack.py::_post(),
+# which returns early when this is False — so this one flag silences digests, trade
+# alerts, EOD/CHRONICLE, ZEUS, PULSE/health, heartbeat, drift and weekly-review posts.
+#
+# ⚠️ This ALSO silences the SAFETY alarms: AEGIS trailing-stop failure,
+# "submitted_unprotected" (a position with no stop), the scanner-down watchdog, and
+# the pyguard venv alarm. Those were the off-Mac early-warning path. Nothing about
+# the TRADING behaviour changes — stops, brackets and breakers all still run — but
+# a failure now surfaces only in the logs and on the dashboard, not on your phone.
+#
+# Re-enable: set to True (or export ILLUMINATI_SLACK=1). Env wins so it can be
+# turned back on for a single run without editing code.
+ENABLE_SLACK_ALERTS = os.getenv("ILLUMINATI_SLACK", "0").strip().lower() in ("1", "true", "yes", "on")
 GMAIL_USER         = os.getenv("GMAIL_USER", "")        # legacy — kept for optional fallback
 GMAIL_APP_PASS     = os.getenv("GMAIL_APP_PASS", "")    # legacy
 ALERT_EMAIL        = os.getenv("ALERT_EMAIL", "renato@deltahubmedia.com")  # legacy

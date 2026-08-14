@@ -24,6 +24,10 @@ import urllib.error
 from datetime import datetime
 from config import SLACK_WEBHOOK_URL, IS_LAB
 try:
+    from config import ENABLE_SLACK_ALERTS as _SLACK_ON
+except ImportError:      # older config.py -> preserve previous behaviour
+    _SLACK_ON = True
+try:
     from config import ACCOUNT_LABEL as _ACCOUNT_LABEL
 except ImportError:
     _ACCOUNT_LABEL = ""
@@ -33,6 +37,12 @@ except ImportError:
 
 def _post(payload: dict) -> bool:
     """POST a JSON payload to the configured Slack webhook. Returns True on success."""
+    # ── MASTER KILL SWITCH ────────────────────────────────────────────────
+    # Checked FIRST, before the payload is decorated or the webhook is read, so
+    # nothing can leak past it. Every public send_* in this module ends here, so
+    # this is the single choke point for Slack on this account.
+    if not _SLACK_ON:
+        return False
     # Account banner (2026-06-15): accounts 1 and 2 share one Slack channel, so every
     # alert carries its account label BOTH in the fallback text (notification preview)
     # AND as a context block at the top of the card body, so the two are never confused.
